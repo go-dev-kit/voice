@@ -1,0 +1,11 @@
+version: 1
+go:
+  version: "1.26.4"
+extra_jobs:
+  # The shared gates already run gofmt, mod verify, tidy, vet and race tests;
+  # these are the parts of `make verify` they do not cover.
+  - name: forbidden-files-lint
+    run: make forbidden-files lint
+    go_version: "1.26.4"
+  - name: model-matrix
+    run: FETCH_DRY_RUN=1 make fetch-test-models
