@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -32,7 +33,7 @@ func NewBenchmarkRunner(outputDir string) *BenchmarkRunner {
 	}
 
 	// Create output directory
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(outputDir, 0o750); err != nil {
 		outputDir = os.TempDir()
 	}
 
@@ -69,6 +70,7 @@ func (r *BenchmarkRunner) RunAllBenchmarks() error {
 
 // runPackageBenchmarks runs benchmarks for a specific package
 func (r *BenchmarkRunner) runPackageBenchmarks(pkg, name string) error {
+	// #nosec G204 -- pkg comes from the runner's fixed benchmark list, not user input.
 	cmd := exec.Command("go", "test", "-bench=.", "-benchmem", "-run=^$", pkg)
 	output, err := cmd.CombinedOutput()
 
@@ -155,7 +157,7 @@ func (r *BenchmarkRunner) generateReport() {
 	reportPath := fmt.Sprintf("%s/benchmark_report_%s.txt",
 		r.outputDir, time.Now().Format("2006-01-02_15-04-05"))
 
-	file, err := os.Create(reportPath)
+	file, err := os.Create(filepath.Clean(reportPath))
 	if err != nil {
 		fmt.Printf("❌ Failed to create report file: %v\n", err)
 		return
@@ -247,7 +249,7 @@ func (r *BenchmarkRunner) RunComparisonBenchmark(baselineResults map[string]*Ben
 	reportPath := fmt.Sprintf("%s/performance_comparison_%s.txt",
 		r.outputDir, time.Now().Format("2006-01-02_15-04-05"))
 
-	file, err := os.Create(reportPath)
+	file, err := os.Create(filepath.Clean(reportPath))
 	if err != nil {
 		fmt.Printf("❌ Failed to create comparison report: %v\n", err)
 		return

@@ -92,6 +92,7 @@ func TestSherpaStreamingDenoiser_Accept_NilDenoiser(t *testing.T) {
 
 func TestSherpaStreamingDenoiser_Accept_NilContext(t *testing.T) {
 	d := &SherpaStreamingDenoiser{denoiser: &fakeOnlineDenoiser{sampleRate: 16000}, sampleRate: 16000}
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if _, err := d.Accept(nil, []float32{1}); err == nil { //nolint:staticcheck // intentional nil-context rejection test
 		t.Fatal("expected error for nil context")
 	}

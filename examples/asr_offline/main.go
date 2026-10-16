@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"go.glpx.pro/gdk/voice"
@@ -41,7 +42,7 @@ func main() {
 	}
 	defer vk.Close()
 
-	wavBytes, err := os.ReadFile(wavPath)
+	wavBytes, err := os.ReadFile(filepath.Clean(wavPath))
 	if err != nil {
 		log.Fatalf("failed to read WAV file: %v", err)
 	}

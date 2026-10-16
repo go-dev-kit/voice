@@ -153,6 +153,7 @@ func TestFinishStreamValidatesArguments(t *testing.T) {
 	service := newTestService()
 	defer service.Close()
 
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if _, err := service.FinishStream(nil, "session"); err == nil { //nolint:staticcheck // deliberately passing nil ctx to assert validation
 		t.Fatal("expected error for nil context")
 	}

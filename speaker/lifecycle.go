@@ -32,7 +32,7 @@ func NewManager(config *Config) (*Manager, error) {
 	}
 
 	// Ensure data directory exists
-	if err := os.MkdirAll(config.DataDir, 0755); err != nil {
+	if err := os.MkdirAll(config.DataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create data directory: %v", err)
 	}
 

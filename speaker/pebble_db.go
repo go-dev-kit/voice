@@ -23,7 +23,7 @@ func NewPebbleSpeakerDatabase(dataDir string) (*PebbleSpeakerDatabase, error) {
 	dbPath := filepath.Join(dataDir, "pebble_speakers")
 
 	// Ensure directory exists
-	if err := os.MkdirAll(dbPath, 0755); err != nil {
+	if err := os.MkdirAll(dbPath, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func (p *PebbleSpeakerDatabase) migrateFromJSON(dataDir string) error {
 	}
 
 	// Read JSON file
-	data, err := os.ReadFile(jsonPath)
+	data, err := os.ReadFile(filepath.Clean(jsonPath))
 	if err != nil {
 		return fmt.Errorf("failed to read JSON file: %v", err)
 	}

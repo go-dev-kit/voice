@@ -71,6 +71,7 @@ func TestSherpaSpeechDenoiser_Denoise_NilDenoiser(t *testing.T) {
 
 func TestSherpaSpeechDenoiser_Denoise_NilContext(t *testing.T) {
 	d := &SherpaSpeechDenoiser{denoiser: &fakeOfflineDenoiser{}}
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if _, err := d.Denoise(nil, []float32{1}, 16000); err == nil { //nolint:staticcheck // intentional nil-context rejection test
 		t.Fatal("expected error for nil context")
 	}

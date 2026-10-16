@@ -9,21 +9,27 @@ import (
 func TestContextAwareMethodsRejectNilContext(t *testing.T) {
 	var manager Manager
 
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if err := manager.RegisterSpeakerContext(nil, "id", "name", []float32{0.1}, 16000); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled from RegisterSpeakerContext, got %v", err)
 	}
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if _, err := manager.IdentifySpeakerContext(nil, []float32{0.1}, 16000); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled from IdentifySpeakerContext, got %v", err)
 	}
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if _, err := manager.VerifySpeakerContext(nil, "id", []float32{0.1}, 16000); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled from VerifySpeakerContext, got %v", err)
 	}
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if speakers := manager.GetAllSpeakersContext(nil); len(speakers) != 0 {
 		t.Fatalf("expected empty speaker list for nil context, got %d", len(speakers))
 	}
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if err := manager.DeleteSpeakerContext(nil, "id"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled from DeleteSpeakerContext, got %v", err)
 	}
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if _, err := manager.ExtractEmbedding(nil, []float32{0.1}, 16000); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled from ExtractEmbedding, got %v", err)
 	}
@@ -85,6 +91,7 @@ func TestSherpaEmbeddingExtractorAdapterRejectsNilContext(t *testing.T) {
 	adapter := NewSherpaEmbeddingExtractorAdapter(&fakeSpeakerEmbeddingExtractor{})
 	defer adapter.Close()
 
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if _, err := adapter.ExtractEmbedding(nil, []float32{0.1}, 16000); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}

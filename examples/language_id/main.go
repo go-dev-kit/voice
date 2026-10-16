@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"go.glpx.pro/gdk/voice/asr"
@@ -32,7 +33,7 @@ func main() {
 	defer identifier.Close()
 
 	sampleRate := envInt("VOICEKIT_LID_SAMPLE_RATE", 16000)
-	wavBytes, err := os.ReadFile(wavPath)
+	wavBytes, err := os.ReadFile(filepath.Clean(wavPath))
 	if err != nil {
 		log.Fatalf("failed to read WAV file: %v", err)
 	}

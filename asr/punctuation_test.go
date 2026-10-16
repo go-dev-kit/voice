@@ -35,6 +35,7 @@ func TestSherpaPunctuationRestoreRejectsEmptyText(t *testing.T) {
 
 func TestSherpaPunctuationRestoreRejectsNilContext(t *testing.T) {
 	p := &SherpaPunctuation{config: &PunctuationConfig{}, punctuation: &fakePunctuation{}}
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if _, err := p.Restore(nil, "hello"); err == nil { //nolint:staticcheck // intentional nil-context guard test
 		t.Fatal("nil context should fail")
 	}

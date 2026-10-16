@@ -56,6 +56,7 @@ func TestSherpaLanguageIdentifierIdentifyRejectsInvalidSampleRate(t *testing.T) 
 
 func TestSherpaLanguageIdentifierIdentifyRejectsNilContext(t *testing.T) {
 	l := &SherpaLanguageIdentifier{config: &LanguageIDConfig{}, identifier: &fakeLanguageIdentifier{}}
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if _, err := l.Identify(nil, []float32{0.1}, 16000); err == nil { //nolint:staticcheck // intentional nil-context guard test
 		t.Fatal("nil context should fail")
 	}
