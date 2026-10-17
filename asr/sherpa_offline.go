@@ -129,10 +129,11 @@ func offlineSegmenter(config *Config) (SpeechSegmenter, error) {
 
 func buildOfflineRecognizerConfig(config *Config) (*sherpa.OfflineRecognizerConfig, error) {
 	offline := config.Offline
+	// The sherpa model_type hint is passed only when set explicitly. Sherpa
+	// detects the model from its files and metadata otherwise; a family-name
+	// hint is wrong for some models ("transducer" loads NeMo Parakeet as an
+	// icefall transducer and the native loader exits the process).
 	modelType := offline.ModelType
-	if modelType == "" && hintsSherpaModelType(offline.ModelFamily) {
-		modelType = offline.ModelFamily
-	}
 
 	modelConfig := sherpa.OfflineModelConfig{
 		Tokens:     offline.TokensPath,
@@ -186,20 +187,6 @@ func buildOfflineRecognizerConfig(config *Config) (*sherpa.OfflineRecognizerConf
 		DecodingMethod: config.DecodingMethod,
 		MaxActivePaths: config.MaxActivePaths,
 	}, nil
-}
-
-// hintsSherpaModelType reports whether the family name doubles as the sherpa
-// model_type hint when OfflineConfig.ModelType is empty. Only the original six
-// families do; the extended families leave the hint empty so sherpa detects the
-// model from its metadata, which is what the serving app did before this
-// package owned the mapping.
-func hintsSherpaModelType(family string) bool {
-	switch family {
-	case OfflineFamilyTransducer, OfflineFamilyParaformer, OfflineFamilyZipformerCTC,
-		OfflineFamilyNemoCTC, OfflineFamilySenseVoice, OfflineFamilyWhisper:
-		return true
-	}
-	return false
 }
 
 // applyExtendedOfflineFamily maps the offline families added after the original

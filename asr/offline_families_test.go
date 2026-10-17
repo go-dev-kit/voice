@@ -301,8 +301,8 @@ func TestBuildOfflineRecognizerConfigExtendedFamilies(t *testing.T) {
 	}
 }
 
-// An explicit Offline.ModelType is passed through for every family; only the
-// original six also default it to the family name.
+// An explicit Offline.ModelType is passed through for every family; no family
+// defaults it, so sherpa detects the model itself.
 func TestBuildOfflineRecognizerConfigModelTypeHint(t *testing.T) {
 	for _, family := range []string{
 		OfflineFamilyTransducer, OfflineFamilyParaformer, OfflineFamilyZipformerCTC,
@@ -315,8 +315,8 @@ func TestBuildOfflineRecognizerConfigModelTypeHint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.ModelConfig.ModelType != family {
-				t.Errorf("ModelType = %q, want %q", got.ModelConfig.ModelType, family)
+			if got.ModelConfig.ModelType != "" {
+				t.Errorf("ModelType = %q, want empty so sherpa detects it", got.ModelConfig.ModelType)
 			}
 		})
 	}
