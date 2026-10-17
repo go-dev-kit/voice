@@ -65,7 +65,7 @@ func TestSegmentedTranscriberRejectsBadInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	//nolint:staticcheck // a nil context is the input under test
+	//lint:ignore SA1012 deliberately nil to assert the nil-context check
 	if _, err := st.Transcribe(nil, []float32{1}, testRate); err == nil {
 		t.Fatal("expected error for nil context")
 	}
