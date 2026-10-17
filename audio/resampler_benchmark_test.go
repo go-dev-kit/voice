@@ -32,10 +32,9 @@ func BenchmarkResampleLinear(b *testing.B) {
 	// Benchmark resampling from 44.1kHz to 16kHz (common ASR scenario)
 	targetRate := 16000
 
-	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := resampler.Resample(audioData, sampleRate, targetRate)
 		if err != nil {
 			b.Fatal(err)
@@ -66,10 +65,9 @@ func BenchmarkResampleCubic(b *testing.B) {
 	resampler := NewResampler(config)
 	targetRate := 16000
 
-	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := resampler.Resample(audioData, sampleRate, targetRate)
 		if err != nil {
 			b.Fatal(err)
@@ -100,10 +98,9 @@ func BenchmarkResampleLanczos(b *testing.B) {
 	resampler := NewResampler(config)
 	targetRate := 16000
 
-	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := resampler.Resample(audioData, sampleRate, targetRate)
 		if err != nil {
 			b.Fatal(err)
@@ -135,10 +132,9 @@ func BenchmarkConvertChannels(b *testing.B) {
 
 	resampler := NewResampler(config)
 
-	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := resampler.ConvertChannels(audioData, 2, 1) // Stereo to mono
 		if err != nil {
 			b.Fatal(err)
@@ -169,10 +165,9 @@ func BenchmarkNormalizeAudio(b *testing.B) {
 	resampler := NewResampler(config)
 	targetRMS := float32(0.1)
 
-	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = resampler.NormalizeAudio(audioData, targetRMS)
 	}
 }
@@ -220,10 +215,9 @@ func BenchmarkAudioProcessingPipeline(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// Full pipeline: bytes -> float32 -> resample -> normalize -> mono
 		floatData, err := converter.ConvertToFloat32(inputBytes, inputConfig)
 		if err != nil {
@@ -239,10 +233,9 @@ func BenchmarkAudioProcessingPipeline(b *testing.B) {
 func BenchmarkBufferPool(b *testing.B) {
 	sizes := []int{1024, 4096, 16384, 65536} // Different buffer sizes
 
-	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for _, size := range sizes {
 			buf := DefaultAudioBufferPool.Get(size)
 			// Simulate some work with the buffer

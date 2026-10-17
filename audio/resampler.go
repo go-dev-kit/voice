@@ -140,117 +140,107 @@ func (r *Resampler) resampleLinear(input []float32, ratio float64, outputLength 
 	return output, nil
 }
 
-// resampleCubic performs cubic interpolation resampling
+// resampleCubic performs Catmull-Rom interpolation. Like linear, it does not
+// low-pass filter, so downsampling with it aliases; use lanczos or sinc there.
 func (r *Resampler) resampleCubic(input []float32, ratio float64, outputLength int) ([]float32, error) {
 	output := DefaultAudioBufferPool.Get(outputLength)
-
+	last := len(input) - 1
 	for i := 0; i < outputLength; i++ {
 		srcIndex := float64(i) / ratio
+		xInt := int(srcIndex)
+		t := float32(srcIndex - float64(xInt))
 
-		// Cubic interpolation
-		x := srcIndex - 0.5
-		xInt := int(x)
-		xFrac := x - float64(xInt)
+		p0 := input[clamp(xInt-1, 0, last)]
+		p1 := input[clamp(xInt, 0, last)]
+		p2 := input[clamp(xInt+1, 0, last)]
+		p3 := input[clamp(xInt+2, 0, last)]
 
-		// Get 4 neighboring samples
-		var samples [4]float32
-		for j := 0; j < 4; j++ {
-			idx := xInt + j - 1
-			if idx < 0 {
-				idx = 0
-			} else if idx >= len(input) {
-				idx = len(input) - 1
-			}
-			samples[j] = input[idx]
-		}
-
-		// Cubic interpolation formula
-		xFrac32 := float32(xFrac)
-		a := -0.5*float32(samples[0]) + 1.5*float32(samples[1]) - 1.5*float32(samples[2]) + 0.5*float32(samples[3])
-		b := float32(samples[0]) - 2.5*float32(samples[1]) + 2*float32(samples[2]) - 0.5*float32(samples[3])
-		c := -0.5*float32(samples[0]) + 0.5*float32(samples[2])
-		d := float32(samples[1])
-
-		output[i] = ((a*xFrac32+b)*xFrac32+c)*xFrac32 + d
+		a := -0.5*p0 + 1.5*p1 - 1.5*p2 + 0.5*p3
+		b := p0 - 2.5*p1 + 2*p2 - 0.5*p3
+		c := -0.5*p0 + 0.5*p2
+		output[i] = ((a*t+b)*t+c)*t + p1
 	}
-
 	return output, nil
 }
 
-// resampleLanczos performs Lanczos resampling
+// resampleLanczos performs band-limited resampling with a Lanczos window.
 func (r *Resampler) resampleLanczos(input []float32, ratio float64, outputLength int) ([]float32, error) {
-	output := DefaultAudioBufferPool.Get(outputLength)
-	a := float64(r.config.FilterLength / 2) // Lanczos parameter
-
-	for i := 0; i < outputLength; i++ {
-		srcIndex := float64(i) / ratio
-		sum := 0.0
-		weightSum := 0.0
-
-		// Lanczos filter
-		for j := -r.config.FilterLength / 2; j <= r.config.FilterLength/2; j++ {
-			x := srcIndex - float64(j)
-
-			// Lanczos kernel
-			if x >= -a && x < a {
-				if x == 0 {
-					weight := 1.0
-					sum += float64(input[clamp(j, 0, len(input)-1)]) * weight
-					weightSum += weight
-				} else {
-					sincVal := math.Sin(math.Pi*x) / (math.Pi * x)
-					lanczosVal := sincVal * (math.Sin(math.Pi*x/a) / (math.Pi * x / a))
-					sum += float64(input[clamp(j, 0, len(input)-1)]) * lanczosVal
-					weightSum += lanczosVal
-				}
-			}
-		}
-
-		if weightSum > 0 {
-			output[i] = float32(sum / weightSum)
-		} else {
-			output[i] = input[clamp(int(srcIndex), 0, len(input)-1)]
-		}
-	}
-
-	return output, nil
+	return resampleWindowedSinc(input, ratio, outputLength, r.halfTaps(), lanczosWindow), nil
 }
 
-// resampleSinc performs sinc interpolation resampling
+// resampleSinc performs band-limited resampling with a Blackman window.
 func (r *Resampler) resampleSinc(input []float32, ratio float64, outputLength int) ([]float32, error) {
+	return resampleWindowedSinc(input, ratio, outputLength, r.halfTaps(), blackmanWindow), nil
+}
+
+// halfTaps is the filter half-width in zero crossings of the low-pass kernel.
+func (r *Resampler) halfTaps() int {
+	if r.config.FilterLength <= 0 {
+		return 16
+	}
+	return max(r.config.FilterLength/2, 2)
+}
+
+// kernelOversample is how many kernel table entries span one zero crossing.
+const kernelOversample = 512
+
+// resampleWindowedSinc resamples with a windowed-sinc low-pass filter whose
+// cutoff is the lower of the two Nyquist rates, so downsampling does not
+// alias. halfTaps zero crossings of the kernel lie on each side of an output
+// sample. The kernel is tabulated once per call and linearly interpolated.
+func resampleWindowedSinc(input []float32, ratio float64, outputLength, halfTaps int, window func(x float64) float64) []float32 {
 	output := DefaultAudioBufferPool.Get(outputLength)
+	cutoff := min(1.0, ratio)
 
-	for i := 0; i < outputLength; i++ {
-		srcIndex := float64(i) / ratio
-		sum := 0.0
-		weightSum := 0.0
-
-		// Sinc filter
-		for j := -r.config.FilterLength; j <= r.config.FilterLength; j++ {
-			x := srcIndex - float64(j)
-
-			if x == 0 {
-				weight := 1.0
-				sum += float64(input[clamp(j, 0, len(input)-1)]) * weight
-				weightSum += weight
-			} else {
-				sincVal := math.Sin(math.Pi*x) / (math.Pi * x)
-				// Apply window (Hann window for better quality)
-				window := 0.5 + 0.5*math.Cos(2*math.Pi*x/float64(r.config.FilterLength))
-				weight := sincVal * window
-				sum += float64(input[clamp(j, 0, len(input)-1)]) * weight
-				weightSum += weight
-			}
+	table := make([]float64, halfTaps*kernelOversample+2)
+	for i := range table {
+		x := float64(i) / kernelOversample // in zero crossings
+		table[i] = sinc(x) * window(x/float64(halfTaps))
+	}
+	kernel := func(distance float64) float64 {
+		pos := math.Abs(distance) * cutoff * kernelOversample
+		idx := int(pos)
+		if idx >= len(table)-1 {
+			return 0
 		}
-
-		if weightSum > 0 {
-			output[i] = float32(sum / weightSum)
-		} else {
-			output[i] = input[clamp(int(srcIndex), 0, len(input)-1)]
-		}
+		frac := pos - float64(idx)
+		return table[idx] + (table[idx+1]-table[idx])*frac
 	}
 
-	return output, nil
+	reach := float64(halfTaps) / cutoff // filter half-width in input samples
+	last := len(input) - 1
+	for i := 0; i < outputLength; i++ {
+		center := float64(i) / ratio
+		lo := int(math.Ceil(center - reach))
+		hi := int(math.Floor(center + reach))
+		var sum, weights float64
+		for j := lo; j <= hi; j++ {
+			w := kernel(center - float64(j))
+			sum += w * float64(input[clamp(j, 0, last)])
+			weights += w
+		}
+		if weights != 0 {
+			output[i] = float32(sum / weights)
+		}
+	}
+	return output
+}
+
+func sinc(x float64) float64 {
+	if x == 0 {
+		return 1
+	}
+	return math.Sin(math.Pi*x) / (math.Pi * x)
+}
+
+// lanczosWindow and blackmanWindow take x in [0, 1] across the half-width.
+func lanczosWindow(x float64) float64 {
+	return sinc(x)
+}
+
+func blackmanWindow(x float64) float64 {
+	// Symmetric Blackman centered on 0 and reaching 0 at |x| = 1.
+	return 0.42 + 0.5*math.Cos(math.Pi*x) + 0.08*math.Cos(2*math.Pi*x)
 }
 
 // ConvertChannels converts between mono and stereo

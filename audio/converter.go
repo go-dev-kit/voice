@@ -3,15 +3,11 @@ package audio
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"math"
 
 	"github.com/go-audio/wav"
-	"github.com/hajimehoshi/go-mp3"
-	"github.com/jfreymuth/oggvorbis"
-	"github.com/mewkiz/flac"
 )
 
 // Converter handles audio format conversion
@@ -98,8 +94,9 @@ func NewConverter(config *ConverterConfig) (*Converter, error) {
 // ConvertAudio converts audio data between different formats and configurations.
 //
 // This function performs format conversion, sample rate resampling, and channel
-// conversion as needed. It supports WAV, PCM, and other uncompressed formats.
-// Compressed formats (FLAC, MP3, OGG, M4A) are not supported due to CGO dependencies.
+// conversion as needed. It decodes WAV, PCM, FLAC, MP3 and Ogg/Vorbis and
+// encodes WAV and PCM; M4A/AAC and compressed encoding return errors. To turn
+// an upload into mono samples for speech recognition, use DecodeMono.
 //
 // Supported conversions:
 //   - Format conversion: WAV ↔ PCM
@@ -120,6 +117,10 @@ func (c *Converter) ConvertAudio(inputData []byte, inputConfig, outputConfig *Au
 		return nil, fmt.Errorf("input data is empty")
 	}
 
+	if inputConfig == nil || outputConfig == nil {
+		return nil, fmt.Errorf("input and output audio configs cannot be nil")
+	}
+
 	// Validate configurations
 	if err := inputConfig.ValidateConfig(); err != nil {
 		return nil, fmt.Errorf("invalid input config: %v", err)
@@ -134,22 +135,30 @@ func (c *Converter) ConvertAudio(inputData []byte, inputConfig, outputConfig *Au
 		return nil, fmt.Errorf("failed to decode input: %v", err)
 	}
 
-	// Apply processing
-	if c.config.EnableResampling {
-		// Resample if needed
-		if inputConfig.SampleRate != outputConfig.SampleRate {
-			samples, err = c.resampler.Resample(samples, inputConfig.SampleRate, outputConfig.SampleRate)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resample: %v", err)
-			}
+	// Apply processing. Channels are reduced before resampling and added
+	// after it, and multichannel audio is resampled per channel, so
+	// interleaved frames are never mixed by the filter. The channel layout is
+	// part of the requested output, so it is converted whether or not rate
+	// conversion is enabled.
+	channels := inputConfig.Channels
+	if outputConfig.Channels < channels {
+		if samples, err = c.resampler.ConvertChannels(samples, channels, outputConfig.Channels); err != nil {
+			return nil, fmt.Errorf("failed to convert channels: %v", err)
 		}
-
-		// Convert channels if needed
-		if inputConfig.Channels != outputConfig.Channels {
-			samples, err = c.resampler.ConvertChannels(samples, inputConfig.Channels, outputConfig.Channels)
-			if err != nil {
-				return nil, fmt.Errorf("failed to convert channels: %v", err)
-			}
+		channels = outputConfig.Channels
+	}
+	if inputConfig.SampleRate != outputConfig.SampleRate {
+		if !c.config.EnableResampling {
+			// Passing the samples through would label them with the wrong rate.
+			return nil, fmt.Errorf("sample rate conversion %d Hz -> %d Hz requested but resampling is disabled", inputConfig.SampleRate, outputConfig.SampleRate)
+		}
+		if samples, err = resampleInterleaved(c.resampler, samples, channels, inputConfig.SampleRate, outputConfig.SampleRate); err != nil {
+			return nil, fmt.Errorf("failed to resample: %v", err)
+		}
+	}
+	if outputConfig.Channels > channels {
+		if samples, err = c.resampler.ConvertChannels(samples, channels, outputConfig.Channels); err != nil {
+			return nil, fmt.Errorf("failed to convert channels: %v", err)
 		}
 	}
 
@@ -165,6 +174,32 @@ func (c *Converter) ConvertAudio(inputData []byte, inputConfig, outputConfig *Au
 	}
 
 	return outputData, nil
+}
+
+// resampleInterleaved resamples each channel of interleaved audio separately.
+func resampleInterleaved(r *Resampler, samples []float32, channels, sourceRate, targetRate int) ([]float32, error) {
+	if channels <= 1 {
+		return r.Resample(samples, sourceRate, targetRate)
+	}
+	frames := len(samples) / channels
+	var out []float32
+	plane := make([]float32, frames)
+	for ch := range channels {
+		for i := range frames {
+			plane[i] = samples[i*channels+ch]
+		}
+		resampled, err := r.Resample(plane, sourceRate, targetRate)
+		if err != nil {
+			return nil, err
+		}
+		if out == nil {
+			out = make([]float32, len(resampled)*channels)
+		}
+		for i, v := range resampled {
+			out[i*channels+ch] = v
+		}
+	}
+	return out, nil
 }
 
 // decodeAudio decodes audio data to float32 samples
@@ -227,10 +262,13 @@ func (c *Converter) decodeWAV(data []byte, config *AudioConfig) ([]float32, erro
 		return nil, fmt.Errorf("WAV bit depth %d does not match config bits per sample %d", decoder.BitDepth, config.BitsPerSample)
 	}
 
-	return c.decodeWAVPCM(decoder, config)
+	return c.decodeWAVPCM(decoder, config, data)
 }
 
-func (c *Converter) decodeWAVPCM(decoder *wav.Decoder, config *AudioConfig) ([]float32, error) {
+// decodeWAVPCM reads the PCM chunk of the file in data. The data chunk size in
+// the header is untrusted, so it must not size an allocation beyond what the
+// file can actually contain.
+func (c *Converter) decodeWAVPCM(decoder *wav.Decoder, config *AudioConfig, data []byte) ([]float32, error) {
 	if err := decoder.FwdToPCM(); err != nil {
 		return nil, fmt.Errorf("failed to locate WAV PCM data: %w", err)
 	}
@@ -238,12 +276,23 @@ func (c *Converter) decodeWAVPCM(decoder *wav.Decoder, config *AudioConfig) ([]f
 		return nil, fmt.Errorf("WAV PCM chunk not found")
 	}
 
+	pcmSize := decoder.PCMSize
+	src := decoder.PCMChunk.R
+	if start, declared, ok := wavChunk(data, "data"); ok && declared == unknownWAVDataSize {
+		// Streamed WAV: the data runs to the end of the file.
+		pcmSize = len(data) - start
+		src = bytes.NewReader(data[start:])
+	}
 	bytesPerSample := config.GetBytesPerSample()
-	if decoder.PCMSize%bytesPerSample != 0 {
+	if pcmSize%bytesPerSample != 0 {
 		return nil, fmt.Errorf("WAV PCM data size not aligned with sample size")
 	}
 
-	sampleCount := decoder.PCMSize / bytesPerSample
+	sampleCount := pcmSize / bytesPerSample
+	if sampleCount > len(data)/bytesPerSample {
+		// The header claims more data than the file holds: truncated.
+		return nil, fmt.Errorf("failed to decode WAV PCM data: %w", io.ErrUnexpectedEOF)
+	}
 	samples := DefaultAudioBufferPool.Get(sampleCount)
 	if sampleCount == 0 {
 		return samples, nil
@@ -266,7 +315,7 @@ func (c *Converter) decodeWAVPCM(decoder *wav.Decoder, config *AudioConfig) ([]f
 		}
 		bytesThisChunk := samplesThisChunk * bytesPerSample
 
-		if _, err := io.ReadFull(decoder.PCMChunk.R, buffer[:bytesThisChunk]); err != nil {
+		if _, err := io.ReadFull(src, buffer[:bytesThisChunk]); err != nil {
 			DefaultAudioBufferPool.Put(samples)
 			return nil, fmt.Errorf("failed to decode WAV PCM data: %w", err)
 		}
@@ -437,17 +486,6 @@ func floatToInt32(sample float32) int32 {
 	return int32(math.Round(float64(sample) * float64(math.MaxInt32)))
 }
 
-// Compressed audio format support is not implemented
-// These formats require external CGO libraries (libflac, libmp3lame, libvorbis, etc.)
-// which introduce deployment complexity and platform dependencies.
-//
-// For production use, consider:
-// 1. Pre-converting compressed audio to WAV/PCM before processing
-// 2. Using external services for format conversion
-// 3. Adding CGO dependencies if deployment constraints allow
-//
-// Currently supported formats: WAV, PCM (uncompressed only)
-
 // validateDecodedFormat checks a decoded stream's native rate/channels against
 // the caller's expectations. A zero config value means "accept whatever the file
 // declares", matching how the compressed formats carry their own rate/channels.
@@ -464,69 +502,39 @@ func validateDecodedFormat(config *AudioConfig, sampleRate, channels int) error 
 // decodeFLAC decodes a FLAC stream (pure Go, no CGO) into interleaved float32
 // samples in [-1, 1].
 func (c *Converter) decodeFLAC(data []byte, config *AudioConfig) ([]float32, error) {
-	stream, err := flac.New(bytes.NewReader(data))
+	decoded, err := decodeFLACNative(data, DecodeLimits{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize FLAC decoder: %w", err)
-	}
-	defer stream.Close()
-
-	info := stream.Info
-	if err := validateDecodedFormat(config, int(info.SampleRate), int(info.NChannels)); err != nil {
 		return nil, err
 	}
-	if info.BitsPerSample == 0 || info.BitsPerSample > 32 {
-		return nil, fmt.Errorf("unsupported FLAC bits per sample: %d", info.BitsPerSample)
+	if err := validateDecodedFormat(config, decoded.SampleRate, decoded.Channels); err != nil {
+		return nil, err
 	}
-	scale := float32(int64(1) << (info.BitsPerSample - 1))
-
-	samples := make([]float32, 0, info.NSamples*uint64(info.NChannels))
-	for {
-		frame, err := stream.ParseNext()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode FLAC frame: %w", err)
-		}
-		n := len(frame.Subframes[0].Samples)
-		for i := 0; i < n; i++ {
-			for _, subframe := range frame.Subframes {
-				samples = append(samples, float32(subframe.Samples[i])/scale)
-			}
-		}
-	}
-	return samples, nil
+	return decoded.Samples, nil
 }
 
 func (c *Converter) encodeFLAC(samples []float32, config *AudioConfig) ([]byte, error) {
 	return nil, fmt.Errorf("FLAC encoding not supported - requires libFLAC CGO library. Use WAV format instead")
 }
 
-// decodeMP3 decodes an MP3 stream (pure Go, no CGO) into interleaved float32
-// samples in [-1, 1]. go-mp3 always emits 16-bit little-endian stereo.
+// decodeMP3 decodes an MP3 stream (pure Go, no CGO) into float32 samples in
+// [-1, 1]. go-mp3 always emits stereo, duplicating mono sources, so a mono
+// config gets the channel average instead of an error.
 func (c *Converter) decodeMP3(data []byte, config *AudioConfig) ([]float32, error) {
-	decoder, err := mp3.NewDecoder(bytes.NewReader(data))
+	decoded, err := decodeMP3Native(data, DecodeLimits{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize MP3 decoder: %w", err)
-	}
-	if err := validateDecodedFormat(config, decoder.SampleRate(), 2); err != nil {
 		return nil, err
 	}
-
-	raw, err := io.ReadAll(decoder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode MP3 stream: %w", err)
+	if config.Channels == 1 {
+		mono, err := (&Decoded{Samples: decoded.Samples, SampleRate: decoded.SampleRate, Channels: 2}).Mono(decoded.SampleRate)
+		if err != nil {
+			return nil, err
+		}
+		decoded = &Decoded{Samples: mono, SampleRate: decoded.SampleRate, Channels: 1}
 	}
-	if len(raw)%2 != 0 {
-		return nil, fmt.Errorf("MP3 PCM data is not 16-bit aligned")
+	if err := validateDecodedFormat(config, decoded.SampleRate, decoded.Channels); err != nil {
+		return nil, err
 	}
-	n := len(raw) / 2
-	samples := make([]float32, n)
-	for i := 0; i < n; i++ {
-		v := int16(binary.LittleEndian.Uint16(raw[i*2:]))
-		samples[i] = float32(v) / c.config.NormalizeFactor
-	}
-	return samples, nil
+	return decoded.Samples, nil
 }
 
 func (c *Converter) encodeMP3(samples []float32, config *AudioConfig) ([]byte, error) {
@@ -536,14 +544,14 @@ func (c *Converter) encodeMP3(samples []float32, config *AudioConfig) ([]byte, e
 // decodeOGG decodes an Ogg/Vorbis stream (pure Go, no CGO) into interleaved
 // float32 samples in [-1, 1].
 func (c *Converter) decodeOGG(data []byte, config *AudioConfig) ([]float32, error) {
-	samples, format, err := oggvorbis.ReadAll(bytes.NewReader(data))
+	decoded, err := Decode(data, FormatOGG, DecodeLimits{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode Ogg/Vorbis stream: %w", err)
-	}
-	if err := validateDecodedFormat(config, format.SampleRate, format.Channels); err != nil {
 		return nil, err
 	}
-	return samples, nil
+	if err := validateDecodedFormat(config, decoded.SampleRate, decoded.Channels); err != nil {
+		return nil, err
+	}
+	return decoded.Samples, nil
 }
 
 func (c *Converter) encodeOGG(samples []float32, config *AudioConfig) ([]byte, error) {
@@ -656,7 +664,7 @@ func (c *Converter) ParseWAVFile(data []byte) ([]float32, int, error) {
 		Channels:      numChannels,
 		BitsPerSample: int(decoder.BitDepth),
 	}
-	samples, err := c.decodeWAVPCM(decoder, config)
+	samples, err := c.decodeWAVPCM(decoder, config, data)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to decode audio: %v", err)
 	}
