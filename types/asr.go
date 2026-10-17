@@ -63,7 +63,10 @@ type Transcription struct {
 	StartTime  time.Duration `json:"start_time,omitempty"`
 	EndTime    time.Duration `json:"end_time,omitempty"`
 	// Segments is set by transcribers that decode audio in several pieces,
-	// with times relative to the start of the input.
+	// with times relative to the start of the input. When there is more than
+	// one, Tokens may be partial: a piece whose overlap with a neighbor was
+	// stitched by text rather than token timing contributes no tokens, so
+	// Tokens never repeats a word. Text and Segments are always complete.
 	Segments []TranscriptSegment `json:"segments,omitempty"`
 }
 

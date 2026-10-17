@@ -245,13 +245,14 @@ const maxSkippedWords = 2
 // garbled trailing words) and starts next (ignoring up to maxSkippedWords
 // garbled leading words), compared case- and punctuation-insensitively. prev
 // keeps the run and loses its garbled tail; next loses its garbled head and
-// the run. A run reached by skipping must be at least two words long, so one
-// common word does not cost real ones. Without a run both are unchanged.
+// the run. A run must be at least two words long: a 2 s overlap holds several
+// words, and a lone match is too often a repeated common word ("und ... und")
+// whose removal would cost a real one. Without a run both are unchanged.
 func mergeOverlap(prev, next string) (string, string) {
 	prevWords, nextWords := strings.Fields(prev), strings.Fields(next)
 	for k := min(len(prevWords), len(nextWords), maxRepeatedWords); k > 0; k-- {
 		for skipped := 0; skipped <= 2*maxSkippedWords; skipped++ {
-			if skipped > 0 && k < 2 {
+			if k < 2 {
 				break
 			}
 			for tail := 0; tail <= min(skipped, maxSkippedWords); tail++ {

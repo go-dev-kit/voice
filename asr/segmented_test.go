@@ -383,8 +383,9 @@ func TestDropRepeatedPrefixSkipsGarbledWords(t *testing.T) {
 		// The later chunk starts mid-word: "ssen" is a fragment of "Verkehrsflüssen".
 		{"das Studium von Verkehrsflüssen schwer, da man", "ssen schwer, da man Fahrerverhalten nicht", "Fahrerverhalten nicht"},
 		{"a b c d", "x y c d e", "e"},
-		// One shared common word after a skip is not trusted.
+		// One shared common word is not trusted, skipped or not.
 		{"und die", "xx die Katze", "xx die Katze"},
+		{"Hunde und", "und Katzen", "und Katzen"},
 		// Three garbled words is beyond the skip budget.
 		{"a b c d", "x y z c d e", "x y z c d e"},
 		// A fragment at the end of prev is skipped too.
