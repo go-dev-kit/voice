@@ -244,8 +244,10 @@ func (c *Converter) encodeAudio(samples []float32, config *AudioConfig) ([]byte,
 
 // decodeWAV decodes WAV format using the RIFF/WAV parser instead of assuming a 44-byte header.
 func (c *Converter) decodeWAV(data []byte, config *AudioConfig) ([]float32, error) {
-	reader := bytes.NewReader(data)
-	decoder := wav.NewDecoder(reader)
+	if err := validateWAVChunks(data); err != nil {
+		return nil, err
+	}
+	decoder := wav.NewDecoder(bytes.NewReader(data))
 	if !decoder.IsValidFile() {
 		return nil, fmt.Errorf("invalid WAV file")
 	}
@@ -261,71 +263,32 @@ func (c *Converter) decodeWAV(data []byte, config *AudioConfig) ([]float32, erro
 	if int(decoder.BitDepth) != config.BitsPerSample {
 		return nil, fmt.Errorf("WAV bit depth %d does not match config bits per sample %d", decoder.BitDepth, config.BitsPerSample)
 	}
-
-	return c.decodeWAVPCM(decoder, config, data)
-}
-
-// decodeWAVPCM reads the PCM chunk of the file in data. The data chunk size in
-// the header is untrusted, so it must not size an allocation beyond what the
-// file can actually contain.
-func (c *Converter) decodeWAVPCM(decoder *wav.Decoder, config *AudioConfig, data []byte) ([]float32, error) {
-	if err := decoder.FwdToPCM(); err != nil {
-		return nil, fmt.Errorf("failed to locate WAV PCM data: %w", err)
-	}
-	if decoder.PCMChunk == nil {
-		return nil, fmt.Errorf("WAV PCM chunk not found")
-	}
-
-	pcmSize := decoder.PCMSize
-	src := decoder.PCMChunk.R
-	if start, declared, ok := wavChunk(data, "data"); ok && declared == unknownWAVDataSize {
-		// Streamed WAV: the data runs to the end of the file.
-		pcmSize = len(data) - start
-		src = bytes.NewReader(data[start:])
-	}
-	bytesPerSample := config.GetBytesPerSample()
-	if pcmSize%bytesPerSample != 0 {
-		return nil, fmt.Errorf("WAV PCM data size not aligned with sample size")
-	}
-
-	sampleCount := pcmSize / bytesPerSample
-	if sampleCount > len(data)/bytesPerSample {
-		// The header claims more data than the file holds: truncated.
-		return nil, fmt.Errorf("failed to decode WAV PCM data: %w", io.ErrUnexpectedEOF)
-	}
-	samples := DefaultAudioBufferPool.Get(sampleCount)
-	if sampleCount == 0 {
-		return samples, nil
-	}
-
-	chunkSamples := c.config.TempBufferSize
-	if chunkSamples > sampleCount {
-		chunkSamples = sampleCount
-	}
-	chunkBytes := chunkSamples * bytesPerSample
-	buffer := BytePool.Get(chunkBytes)
-	defer BytePool.Put(buffer)
-
-	written := 0
-	for written < sampleCount {
-		remainingSamples := sampleCount - written
-		samplesThisChunk := chunkSamples
-		if remainingSamples < samplesThisChunk {
-			samplesThisChunk = remainingSamples
+	// A data chunk that claims more bytes than the file holds is a truncated
+	// file; the converter reports it rather than decoding a prefix.
+	if start, declared, ok := wavChunk(data, "data"); ok {
+		size := uint64(len(data) - start)
+		if declared != unknownWAVDataSize {
+			if uint64(start)+uint64(declared) > uint64(len(data)) {
+				return nil, fmt.Errorf("failed to decode WAV PCM data: %w", io.ErrUnexpectedEOF)
+			}
+			size = uint64(declared)
 		}
-		bytesThisChunk := samplesThisChunk * bytesPerSample
-
-		if _, err := io.ReadFull(src, buffer[:bytesThisChunk]); err != nil {
-			DefaultAudioBufferPool.Put(samples)
-			return nil, fmt.Errorf("failed to decode WAV PCM data: %w", err)
+		if size%uint64(config.GetBytesPerSample()) != 0 {
+			return nil, fmt.Errorf("WAV PCM data size not aligned with sample size")
 		}
-		if err := c.decodePCMBytesInto(samples[written:written+samplesThisChunk], buffer[:bytesThisChunk], config); err != nil {
-			DefaultAudioBufferPool.Put(samples)
-			return nil, err
-		}
-		written += samplesThisChunk
 	}
 
+	decoded, err := decodeWAVNative(data, DecodeLimits{})
+	if err != nil {
+		return nil, err
+	}
+	samples := decoded.Samples
+	if config.BitsPerSample == 16 && c.config.NormalizeFactor != 32768 {
+		scale := 32768 / c.config.NormalizeFactor
+		for i := range samples {
+			samples[i] *= scale
+		}
+	}
 	return samples, nil
 }
 
@@ -641,44 +604,32 @@ func (c *Converter) ValidateConversion(from, to AudioFormat) bool {
 
 // ParseWAVFile parses WAV file and returns audio data
 func (c *Converter) ParseWAVFile(data []byte) ([]float32, int, error) {
-	reader := bytes.NewReader(data)
-	decoder := wav.NewDecoder(reader)
+	if err := validateWAVChunks(data); err != nil {
+		return nil, 0, err
+	}
+	decoder := wav.NewDecoder(bytes.NewReader(data))
 	if !decoder.IsValidFile() {
 		return nil, 0, fmt.Errorf("invalid WAV file")
 	}
-
-	// Get audio format information
 	sampleRate := int(decoder.SampleRate)
 	numChannels := int(decoder.NumChans)
-
-	// Only support mono or stereo
 	if numChannels > 2 {
 		return nil, 0, fmt.Errorf("unsupported number of channels: %d", numChannels)
 	}
 	if decoder.WavAudioFormat != 1 {
 		return nil, 0, fmt.Errorf("unsupported WAV audio format %d: only PCM is supported", decoder.WavAudioFormat)
 	}
-	config := &AudioConfig{
-		Format:        FormatWAV,
-		SampleRate:    sampleRate,
-		Channels:      numChannels,
-		BitsPerSample: int(decoder.BitDepth),
-	}
-	samples, err := c.decodeWAVPCM(decoder, config, data)
+	config := &AudioConfig{Format: FormatWAV, SampleRate: sampleRate, Channels: numChannels, BitsPerSample: int(decoder.BitDepth)}
+	samples, err := c.decodeWAV(data, config)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to decode audio: %v", err)
 	}
-
-	// If stereo, convert to mono (take average)
 	if numChannels == 2 {
-		monoSamples := DefaultAudioBufferPool.Get(len(samples) / 2)
-		for i := 0; i < len(monoSamples); i++ {
-			monoSamples[i] = (samples[i*2] + samples[i*2+1]) / 2.0
+		mono, err := (&Decoded{Samples: samples, SampleRate: sampleRate, Channels: 2}).Mono(sampleRate)
+		if err != nil {
+			return nil, 0, err
 		}
-		// Return stereo samples to pool
-		DefaultAudioBufferPool.Put(samples)
-		samples = monoSamples
+		samples = mono
 	}
-
 	return samples, sampleRate, nil
 }

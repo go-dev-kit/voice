@@ -300,10 +300,10 @@ func TestResampleRejectsInvalidRates(t *testing.T) {
 		{"negative source", -1, 16000},
 		{"zero target", 16000, 0},
 		{"negative target", 16000, -16000},
-		{"source below range", 7999, 16000},
-		{"source above range", 192001, 16000},
-		{"target below range", 16000, 7999},
-		{"target above range", 16000, 192001},
+		{"source below range", 999, 16000},
+		{"source above range", 768001, 16000},
+		{"target below range", 16000, 999},
+		{"target above range", 16000, 768001},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

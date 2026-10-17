@@ -52,7 +52,12 @@ func (l DecodeLimits) maxFrames(sampleRate int) int {
 	if l.MaxDuration <= 0 {
 		return -1
 	}
-	return int(l.MaxDuration * time.Duration(sampleRate) / time.Second)
+	// Float math: Duration*rate overflows int64 for long limits at high rates.
+	frames := l.MaxDuration.Seconds() * float64(sampleRate)
+	if frames >= math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int(frames)
 }
 
 func (l DecodeLimits) check(frames, sampleRate int) error {
@@ -127,6 +132,9 @@ func (d *Decoded) Mono(targetRate int) ([]float32, error) {
 }
 
 func decodeWAVNative(data []byte, limits DecodeLimits) (*Decoded, error) {
+	if err := validateWAVChunks(data); err != nil {
+		return nil, err
+	}
 	decoder := wav.NewDecoder(bytes.NewReader(data))
 	if !decoder.IsValidFile() {
 		return nil, fmt.Errorf("invalid WAV file")
@@ -167,6 +175,35 @@ func decodeWAVNative(data []byte, limits DecodeLimits) (*Decoded, error) {
 		return nil, err
 	}
 	return &Decoded{Samples: samples, SampleRate: int(decoder.SampleRate), Channels: int(decoder.NumChans)}, nil
+}
+
+// maxWAVFormatChunk bounds the fmt chunk; real ones are 16 to 40 bytes.
+const maxWAVFormatChunk = 1024
+
+// validateWAVChunks checks every chunk before the data chunk against the
+// bytes actually present. The WAV library allocates fmt and LIST chunks at
+// their declared size before reading them, so a forged size in a 44-byte file
+// would otherwise allocate gigabytes.
+func validateWAVChunks(data []byte) error {
+	if len(data) < 12 {
+		return fmt.Errorf("invalid WAV file")
+	}
+	for off := 12; off+8 <= len(data); {
+		id := string(data[off : off+4])
+		size := uint64(binary.LittleEndian.Uint32(data[off+4:]))
+		if id == "data" {
+			return nil
+		}
+		if id == "fmt " && size > maxWAVFormatChunk {
+			return fmt.Errorf("invalid WAV file: fmt chunk claims %d bytes", size)
+		}
+		next := uint64(off) + 8 + size + size&1
+		if uint64(off)+8+size > uint64(len(data)) {
+			return fmt.Errorf("invalid WAV file: %q chunk claims %d bytes, only %d remain", id, size, len(data)-off-8)
+		}
+		off = int(next)
+	}
+	return nil
 }
 
 // unknownWAVDataSize is the data chunk size streaming writers (ffmpeg writing

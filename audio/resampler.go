@@ -37,6 +37,13 @@ const (
 	QualityHigh   ResampleQuality = "high"
 )
 
+// Resample accepts rates from telephony-grade narrowband to high-resolution
+// studio audio; the windowed-sinc path is valid across the whole range.
+const (
+	minResampleRate = 1000
+	maxResampleRate = 768000
+)
+
 // NewResampler creates a new audio resampler
 func NewResampler(config *ResampleConfig) *Resampler {
 	if config == nil {
@@ -65,8 +72,8 @@ func NewResampler(config *ResampleConfig) *Resampler {
 //
 // Parameters:
 //   - audioData: float32 audio samples in range [-1, 1]
-//   - sourceRate: original sample rate in Hz (8000-192000)
-//   - targetRate: desired sample rate in Hz (8000-192000)
+//   - sourceRate: original sample rate in Hz (1000-768000)
+//   - targetRate: desired sample rate in Hz (1000-768000)
 //
 // Returns resampled audio data or an error if resampling fails.
 // Uses buffer pooling for memory efficiency.
@@ -79,11 +86,11 @@ func (r *Resampler) Resample(audioData []float32, sourceRate, targetRate int) ([
 	if targetRate <= 0 {
 		return nil, fmt.Errorf("targetRate must be positive, got %d", targetRate)
 	}
-	if sourceRate < 8000 || sourceRate > 192000 {
-		return nil, fmt.Errorf("sourceRate must be between 8000-192000 Hz, got %d", sourceRate)
+	if sourceRate < minResampleRate || sourceRate > maxResampleRate {
+		return nil, fmt.Errorf("sourceRate must be between %d-%d Hz, got %d", minResampleRate, maxResampleRate, sourceRate)
 	}
-	if targetRate < 8000 || targetRate > 192000 {
-		return nil, fmt.Errorf("targetRate must be between 8000-192000 Hz, got %d", targetRate)
+	if targetRate < minResampleRate || targetRate > maxResampleRate {
+		return nil, fmt.Errorf("targetRate must be between %d-%d Hz, got %d", minResampleRate, maxResampleRate, targetRate)
 	}
 
 	if len(audioData) == 0 {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -669,4 +670,111 @@ func dominantFrequency(x []float32, rate int) float64 {
 		}
 	}
 	return best
+}
+
+// forgedChunkWAV is a minimal WAV whose chunk before data claims size bytes.
+func forgedChunkWAV(id string, size uint32) []byte {
+	le := binary.LittleEndian
+	b := []byte("RIFF\x00\x00\x00\x00WAVE")
+	if id != "fmt " {
+		b = append(b, "fmt "...)
+		b = le.AppendUint32(b, 16)
+		b = le.AppendUint16(b, 1)
+		b = le.AppendUint16(b, 1)
+		b = le.AppendUint32(b, 16000)
+		b = le.AppendUint32(b, 32000)
+		b = le.AppendUint16(b, 2)
+		b = le.AppendUint16(b, 16)
+	}
+	b = append(b, id...)
+	b = le.AppendUint32(b, size)
+	b = append(b, make([]byte, 16)...)
+	b = append(b, "data"...)
+	b = le.AppendUint32(b, 4)
+	b = append(b, 0, 0, 0, 0)
+	le.PutUint32(b[4:], uint32(len(b)-8))
+	return b
+}
+
+func TestForgedWAVChunkSizesDoNotAllocate(t *testing.T) {
+	cases := []struct {
+		id   string
+		size uint32
+	}{
+		{"fmt ", 0x7FFFFFF0},
+		{"fmt ", 0xFFFFFFF0},
+		{"fmt ", 2048},
+		{"LIST", 0xFFFFFFF0},
+		{"JUNK", 0x7FFFFFF0},
+	}
+	conv, err := NewConverter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		data := forgedChunkWAV(tc.id, tc.size)
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		_, decodeErr := Decode(data, FormatWAV, DecodeLimits{})
+		_, convertErr := conv.ConvertToFloat32(data, DefaultWAVConfig())
+		_, _, parseErr := conv.ParseWAVFile(data)
+		runtime.ReadMemStats(&after)
+		if decodeErr == nil || convertErr == nil || parseErr == nil {
+			t.Errorf("%q size %#x: want errors, got %v / %v / %v", tc.id, tc.size, decodeErr, convertErr, parseErr)
+		}
+		if grown := after.TotalAlloc - before.TotalAlloc; grown > 1<<20 {
+			t.Errorf("%q size %#x allocated %d bytes", tc.id, tc.size, grown)
+		}
+	}
+}
+
+func TestValidWAVWithListChunkStillDecodes(t *testing.T) {
+	data := forgedChunkWAV("LIST", 16)
+	got, err := Decode(data, FormatWAV, DecodeLimits{})
+	if err != nil || len(got.Samples) != 2 {
+		t.Fatalf("got %v, %v; want 2 samples", got, err)
+	}
+}
+
+func TestConvertAudioIgnoresTheRIFFPadByte(t *testing.T) {
+	// 8-bit mono, 3 bytes of audio plus the pad byte RIFF requires.
+	spec := wavSpec{tag: 1, channels: 1, rate: 16000, bits: 8}
+	data := buildWAV(spec, []byte{128, 200, 56})
+	conv, err := NewConverter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &AudioConfig{Format: FormatWAV, SampleRate: 16000, Channels: 1, BitsPerSample: 8}
+	samples, err := conv.ConvertToFloat32(data, cfg)
+	if err != nil || len(samples) != 3 {
+		t.Fatalf("ConvertToFloat32 = %d samples, %v; want 3", len(samples), err)
+	}
+	decoded, err := Decode(data, FormatWAV, DecodeLimits{})
+	if err != nil || len(decoded.Samples) != 3 {
+		t.Fatalf("Decode = %v, %v; want 3 samples", decoded, err)
+	}
+}
+
+func TestDecodeLimitsDoNotOverflow(t *testing.T) {
+	limits := DecodeLimits{MaxDuration: time.Duration(math.MaxInt64)}
+	if got := limits.maxFrames(192000); got <= 0 {
+		t.Fatalf("maxFrames = %d, want a large positive bound", got)
+	}
+	if err := limits.check(1<<30, 192000); err != nil {
+		t.Fatalf("a huge limit rejected audio: %v", err)
+	}
+	if got := (DecodeLimits{MaxDuration: 14 * time.Hour}).maxFrames(192000); got <= 0 {
+		t.Fatalf("14 h at 192 kHz gave %d", got)
+	}
+}
+
+func TestDecodeMonoAcceptsNarrowbandAndHighRates(t *testing.T) {
+	for _, rate := range []int{6000, 384000} {
+		d := &Decoded{Samples: make([]float32, rate/10), SampleRate: rate, Channels: 1}
+		mono, err := d.Mono(16000)
+		if err != nil || len(mono) != 1600 {
+			t.Fatalf("%d Hz: got %d samples, %v", rate, len(mono), err)
+		}
+	}
 }
