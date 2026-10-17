@@ -344,3 +344,66 @@ func BenchmarkSegmentedTranscriberOverhead(b *testing.B) {
 		}
 	}
 }
+
+// cutChunks is a 0-30 s span cut at 20 s with a 2 s overlap.
+var cutChunks = []Chunk{
+	{Start: 0, End: secs(21), KeepFrom: 0, KeepTo: secs(20)},
+	{Start: secs(19), End: secs(30), KeepFrom: secs(20), KeepTo: secs(30), Continues: true},
+}
+
+func TestStitchChunksTimedThenUntimedLosesNoWords(t *testing.T) {
+	// Chunk A is timed and heard "wurden dom" past the cut; chunk B has no
+	// timing. The cut must be stitched by text with A's whole text, or the
+	// words A heard after the cut are lost.
+	a := &types.Transcription{Text: "Die Ziegen wurden dom", Tokens: timed(
+		" Die", 17.0, " Zie", 18.0, "gen", 18.3, " wur", 19.8, "den", 20.3, " dom", 20.8)}
+	b := &types.Transcription{Text: "Ziegen wurden domestiziert im Iran"}
+	got := stitchChunks(cutChunks, []*types.Transcription{a, b}, secs(30), testRate)
+	if got.Text != "Die Ziegen wurden domestiziert im Iran" {
+		t.Fatalf("Text = %q, want no lost or repeated words", got.Text)
+	}
+	if len(got.Tokens) != 0 {
+		t.Fatalf("tokens from a text-stitched chunk leaked: %+v", got.Tokens)
+	}
+}
+
+func TestStitchChunksUntimedThenTimedDoesNotRepeat(t *testing.T) {
+	a := &types.Transcription{Text: "Leider fällt das Studium von Verkehrsflüssen schwer"}
+	b := &types.Transcription{Text: "Verkehrsflüssen schwer da man nichts weiß", Tokens: timed(
+		" Verkehrsflüssen", 0.2, " schwer", 0.9, " da", 1.4, " man", 1.6, " nichts", 1.8, " weiß", 2.1)}
+	got := stitchChunks(cutChunks, []*types.Transcription{a, b}, secs(30), testRate)
+	want := "Leider fällt das Studium von Verkehrsflüssen schwer da man nichts weiß"
+	if got.Text != want {
+		t.Fatalf("Text = %q, want %q", got.Text, want)
+	}
+}
+
+func TestDropRepeatedPrefixSkipsGarbledWords(t *testing.T) {
+	tests := []struct{ prev, next, want string }{
+		// The later chunk starts mid-word: "ssen" is a fragment of "Verkehrsflüssen".
+		{"das Studium von Verkehrsflüssen schwer, da man", "ssen schwer, da man Fahrerverhalten nicht", "Fahrerverhalten nicht"},
+		{"a b c d", "x y c d e", "e"},
+		// One shared common word after a skip is not trusted.
+		{"und die", "xx die Katze", "xx die Katze"},
+		// Three garbled words is beyond the skip budget.
+		{"a b c d", "x y z c d e", "x y z c d e"},
+		// A fragment at the end of prev is skipped too.
+		{"die Ziegen wurden dom", "Ziegen wurden domestiziert", "domestiziert"},
+	}
+	for _, tt := range tests {
+		if got := dropRepeatedPrefix(tt.prev, tt.next); got != tt.want {
+			t.Errorf("dropRepeatedPrefix(%q, %q) = %q, want %q", tt.prev, tt.next, got, tt.want)
+		}
+	}
+}
+
+func TestMergeOverlapTrimsTheGarbledTailOfPrev(t *testing.T) {
+	prev, next := mergeOverlap("Die Ziegen wurden dom", "Ziegen wurden domestiziert")
+	if prev != "Die Ziegen wurden" || next != "domestiziert" {
+		t.Fatalf("mergeOverlap = (%q, %q)", prev, next)
+	}
+	prev, next = mergeOverlap("ganz anders", "nichts gemeinsam")
+	if prev != "ganz anders" || next != "nichts gemeinsam" {
+		t.Fatalf("no overlap changed text: (%q, %q)", prev, next)
+	}
+}

@@ -90,22 +90,34 @@ func (t *SegmentedTranscriber) Close() error {
 	return errors.Join(errs...)
 }
 
-// stitchChunks joins per-chunk results into one transcription. Where chunks
-// overlap around a cut, a chunk keeps only the tokens that start inside its
-// keep range when its tokens are timed and spell out its text; otherwise the
-// words the previous chunk already ended with are dropped from its text.
+// stitchChunks joins per-chunk results into one transcription. Each cut
+// inside an over-long span is stitched one of two ways. When both neighbors'
+// tokens are timed and spell out their text, each word goes to the chunk whose
+// keep range it starts in. Otherwise both neighbors keep their whole text and
+// the words the earlier chunk ended with are dropped from the start of the
+// later one. Tokens are reported only for chunks stitched by timing on every
+// side, so they never repeat a word.
 func stitchChunks(chunks []Chunk, results []*types.Transcription, sampleCount, sampleRate int) *types.Transcription {
 	out := &types.Transcription{
 		Timestamp: time.Now(),
 		EndTime:   samplesToDuration(sampleCount, sampleRate),
 		Segments:  make([]types.TranscriptSegment, 0, len(chunks)),
 	}
-	var text, prevText string
+	timed := make([]bool, len(chunks))
+	for i := range chunks {
+		if results[i] == nil {
+			results[i] = &types.Transcription{}
+		}
+		timed[i] = tokensSpellText(results[i])
+	}
+	// byTiming[i] says how the cut between chunk i-1 and chunk i is stitched.
+	byTiming := make([]bool, len(chunks))
+	for i := 1; i < len(chunks); i++ {
+		byTiming[i] = chunks[i].Continues && timed[i-1] && timed[i]
+	}
+
 	for i, c := range chunks {
 		r := results[i]
-		if r == nil {
-			r = &types.Transcription{}
-		}
 		if out.Language == "" {
 			out.Language = r.Language
 		}
@@ -119,14 +131,17 @@ func stitchChunks(chunks []Chunk, results []*types.Transcription, sampleCount, s
 		offset := samplesToDuration(c.Start, sampleRate)
 		keepFrom := samplesToDuration(c.KeepFrom, sampleRate)
 		keepTo := samplesToDuration(c.KeepTo, sampleRate)
-		splitAfter := i+1 < len(chunks) && chunks[i+1].Continues
+		cutBefore := c.Continues
+		cutAfter := i+1 < len(chunks) && chunks[i+1].Continues
+		ownBefore := cutBefore && byTiming[i]
+		ownAfter := cutAfter && byTiming[i+1]
 
 		var segText string
 		var owned []types.Token
-		if tokensSpellText(r) {
+		if timed[i] {
 			for _, word := range groupWords(r.Tokens) {
 				at := offset + word[0].StartTime
-				if (c.Continues && at < keepFrom) || (splitAfter && at >= keepTo) {
+				if (ownBefore && at < keepFrom) || (ownAfter && at >= keepTo) {
 					continue
 				}
 				for _, tok := range word {
@@ -137,21 +152,25 @@ func stitchChunks(chunks []Chunk, results []*types.Transcription, sampleCount, s
 			segText = tokensText(owned)
 		} else {
 			segText = strings.TrimSpace(r.Text)
-			if c.Continues {
-				segText = dropRepeatedPrefix(prevText, segText)
-			}
 		}
-		prevText = strings.TrimSpace(r.Text)
+		if cutBefore && !ownBefore && i > 0 {
+			var prevText string
+			prevText, segText = mergeOverlap(out.Segments[i-1].Text, segText)
+			out.Segments[i-1].Text = prevText
+		}
 
-		out.Tokens = append(out.Tokens, owned...)
+		if timed[i] && (!cutBefore || ownBefore) && (!cutAfter || ownAfter) {
+			out.Tokens = append(out.Tokens, owned...)
+		}
 		out.Segments = append(out.Segments, types.TranscriptSegment{
 			Text:      segText,
 			StartTime: keepFrom,
 			EndTime:   keepTo,
 		})
-		text = joinText(text, segText)
 	}
-	out.Text = text
+	for _, seg := range out.Segments {
+		out.Text = joinText(out.Text, seg.Text)
+	}
 	return out
 }
 
@@ -216,24 +235,53 @@ func collapseSpace(s string) string {
 // maxRepeatedWords bounds how many words two overlapping chunks can share.
 const maxRepeatedWords = 12
 
-// dropRepeatedPrefix removes from next the longest run of words that both ends
-// prev and starts next, compared case- and punctuation-insensitively.
-func dropRepeatedPrefix(prev, next string) string {
+// maxSkippedWords is how many words at each edge of an overlap may be
+// garbled: a chunk cut inside a word ends, and its neighbor starts, with a
+// fragment.
+const maxSkippedWords = 2
+
+// mergeOverlap removes the words two overlapping chunks both heard. It finds
+// the longest run of words that ends prev (ignoring up to maxSkippedWords
+// garbled trailing words) and starts next (ignoring up to maxSkippedWords
+// garbled leading words), compared case- and punctuation-insensitively. prev
+// keeps the run and loses its garbled tail; next loses its garbled head and
+// the run. A run reached by skipping must be at least two words long, so one
+// common word does not cost real ones. Without a run both are unchanged.
+func mergeOverlap(prev, next string) (string, string) {
 	prevWords, nextWords := strings.Fields(prev), strings.Fields(next)
-	limit := min(len(prevWords), len(nextWords), maxRepeatedWords)
-	for k := limit; k > 0; k-- {
-		match := true
-		for j := range k {
-			if normalizeWord(prevWords[len(prevWords)-k+j]) != normalizeWord(nextWords[j]) {
-				match = false
+	for k := min(len(prevWords), len(nextWords), maxRepeatedWords); k > 0; k-- {
+		for skipped := 0; skipped <= 2*maxSkippedWords; skipped++ {
+			if skipped > 0 && k < 2 {
 				break
 			}
-		}
-		if match {
-			return strings.Join(nextWords[k:], " ")
+			for tail := 0; tail <= min(skipped, maxSkippedWords); tail++ {
+				head := skipped - tail
+				if head > maxSkippedWords || tail+k > len(prevWords) || head+k > len(nextWords) {
+					continue
+				}
+				end := len(prevWords) - tail
+				if wordsEqual(prevWords[end-k:end], nextWords[head:head+k]) {
+					return strings.Join(prevWords[:end], " "), strings.Join(nextWords[head+k:], " ")
+				}
+			}
 		}
 	}
-	return next
+	return prev, next
+}
+
+// dropRepeatedPrefix is mergeOverlap's result for next alone.
+func dropRepeatedPrefix(prev, next string) string {
+	_, rest := mergeOverlap(prev, next)
+	return rest
+}
+
+func wordsEqual(a, b []string) bool {
+	for i := range a {
+		if normalizeWord(a[i]) != normalizeWord(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeWord(w string) string {

@@ -134,3 +134,23 @@ func BenchmarkSherpaSegmenter(b *testing.B) {
 	}
 	b.ReportMetric(float64(len(samples))/16000*float64(b.N)/b.Elapsed().Seconds(), "audio-s/s")
 }
+
+func TestOfflineSegmenterProviders(t *testing.T) {
+	for _, provider := range []string{"", VADProviderNone, VADProviderEnergy} {
+		seg, err := offlineSegmenter(&Config{VADProvider: provider})
+		if err != nil || seg != nil {
+			t.Fatalf("provider %q on an undefaulted config: got (%v, %v), want no segmenter", provider, seg, err)
+		}
+	}
+	model := os.Getenv("VOICEKIT_VAD_MODEL")
+	if _, err := offlineSegmenter(&Config{VADProvider: "silero"}); err == nil || !strings.Contains(err.Error(), "model path is required") {
+		t.Fatalf("silero without a model: got %v", err)
+	}
+	if model == "" {
+		return
+	}
+	seg, err := offlineSegmenter(&Config{VADProvider: "silero", VADModelPath: model})
+	if err != nil || seg == nil {
+		t.Fatalf("short provider name with a model: got (%v, %v)", seg, err)
+	}
+}

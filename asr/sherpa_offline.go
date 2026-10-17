@@ -78,12 +78,10 @@ func NewOfflineTranscriber(config *Config) (*SegmentedTranscriber, error) {
 	if err != nil {
 		return nil, err
 	}
-	var segmenter SpeechSegmenter
-	if config.VADProvider != VADProviderNone && config.VADProvider != VADProviderEnergy {
-		if segmenter, err = NewSpeechSegmenter(vadConfigFromASR(config)); err != nil {
-			_ = model.Close()
-			return nil, fmt.Errorf("create speech segmenter: %w", err)
-		}
+	segmenter, err := offlineSegmenter(config)
+	if err != nil {
+		_ = model.Close()
+		return nil, fmt.Errorf("create speech segmenter: %w", err)
 	}
 	transcriber, err := NewSegmentedTranscriber(model, segmenter, config.Offline.ChunkOptions())
 	if err != nil {
@@ -94,6 +92,21 @@ func NewOfflineTranscriber(config *Config) (*SegmentedTranscriber, error) {
 		return nil, err
 	}
 	return transcriber, nil
+}
+
+// offlineSegmenter returns the speech segmenter config asks for: a Sherpa VAD
+// for silero_vad/ten_vad (short names accepted), nil for an empty provider,
+// none and energy. An empty provider means the Config default (none) even on a
+// config that never had defaults applied.
+func offlineSegmenter(config *Config) (SpeechSegmenter, error) {
+	switch provider := normalizeVADProvider(config.VADProvider); provider {
+	case "", VADProviderNone, VADProviderEnergy:
+		return nil, nil
+	default:
+		vad := vadConfigFromASR(config)
+		vad.Provider = provider
+		return NewSpeechSegmenter(vad)
+	}
 }
 
 func buildOfflineRecognizerConfig(config *Config) (*sherpa.OfflineRecognizerConfig, error) {
