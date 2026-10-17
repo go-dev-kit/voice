@@ -22,8 +22,25 @@ type SherpaOfflineModel struct {
 	// maxDecode is the longest input one decode accepts; zero means no limit.
 	maxDecode time.Duration
 
-	mu     sync.Mutex
+	// slots bounds concurrent decodes on the shared native recognizer; its
+	// capacity is OfflineConfig.MaxConcurrentDecodes (one when unset).
+	slots     chan struct{}
+	slotsOnce sync.Once
+
+	// mu guards recognizer and closed: decodes hold the read lock, Close the
+	// write lock, so Close waits for in-flight decodes.
+	mu     sync.RWMutex
 	closed bool
+}
+
+// decodeSlots returns the decode semaphore, defaulting to one slot.
+func (m *SherpaOfflineModel) decodeSlots() chan struct{} {
+	m.slotsOnce.Do(func() {
+		if m.slots == nil {
+			m.slots = make(chan struct{}, 1)
+		}
+	})
+	return m.slots
 }
 
 type offlineRecognizer interface {
@@ -65,6 +82,7 @@ func NewSherpaOfflineModel(config *Config) (*SherpaOfflineModel, error) {
 		quantization: config.Quantization,
 		recognizer:   &nativeOfflineRecognizer{recognizer: recognizer},
 		maxDecode:    secondsToDuration(config.Offline.maxDecodeSeconds()),
+		slots:        make(chan struct{}, max(config.Offline.MaxConcurrentDecodes, 1)),
 	}, nil
 }
 
@@ -284,21 +302,23 @@ func (m *SherpaOfflineModel) Transcribe(ctx context.Context, audio []float32, sa
 		return nil, &AudioTooLongError{Duration: duration, Limit: m.maxDecode}
 	}
 
+	// Wait for a decode slot; a caller that gives up while queued leaves
+	// without costing a decode.
+	slots := m.decodeSlots()
 	select {
+	case slots <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	default:
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.closed || m.recognizer == nil {
-		return nil, fmt.Errorf("sherpa offline recognizer is closed")
-	}
-	// Decodes run one at a time; a caller that gave up while queued must not
-	// still cost a full decode.
+	defer func() { <-slots }()
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed || m.recognizer == nil {
+		return nil, fmt.Errorf("sherpa offline recognizer is closed")
 	}
 
 	stream, err := m.recognizer.NewStream()

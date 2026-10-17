@@ -1126,26 +1126,103 @@ func TestSherpaOfflineModelRefusesAudioOverItsLimit(t *testing.T) {
 	}
 }
 
-func TestSherpaOfflineModelChecksContextAfterQueueing(t *testing.T) {
+func TestSherpaOfflineModelLeavesTheQueueOnCancel(t *testing.T) {
 	stream := &fakeOfflineStream{}
 	model := &SherpaOfflineModel{recognizer: &fakeOfflineRecognizer{stream: stream}}
-	model.mu.Lock()
+	slots := model.decodeSlots()
+	slots <- struct{}{} // another decode holds the only slot
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
 		_, err := model.Transcribe(ctx, []float32{0.1}, 16000)
 		done <- err
 	}()
-	time.Sleep(20 * time.Millisecond) // let the call queue on the lock
+	time.Sleep(20 * time.Millisecond) // let the call queue for the slot
 	cancel()
-	model.mu.Unlock()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v, want context.Canceled", err)
 	}
+	<-slots
 	if stream.acceptedSamples != nil {
 		t.Fatal("a canceled caller still decoded")
 	}
 }
+
+func TestSherpaOfflineModelConcurrentDecodesAndClose(t *testing.T) {
+	recognizer := &blockingOfflineRecognizer{release: make(chan struct{}), entered: make(chan struct{}, 4)}
+	model := &SherpaOfflineModel{recognizer: recognizer, slots: make(chan struct{}, 3)}
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := model.Transcribe(context.Background(), []float32{0.1}, 16000)
+			errs <- err
+		}()
+	}
+	for range 3 {
+		<-recognizer.entered // three decodes run at once
+	}
+	select {
+	case <-recognizer.entered:
+		t.Fatal("a fourth decode ran past the three-slot limit")
+	case <-time.After(30 * time.Millisecond):
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- model.Close() }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while decodes were in flight")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(recognizer.release)
+	wg.Wait()
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	close(errs)
+	var ok, closedErrs int
+	for err := range errs {
+		if err == nil {
+			ok++
+		} else if strings.Contains(err.Error(), "closed") {
+			closedErrs++
+		}
+	}
+	if ok < 3 || ok+closedErrs != 4 || recognizer.maxActive.Load() != 3 {
+		t.Fatalf("ok=%d closed=%d max concurrent=%d", ok, closedErrs, recognizer.maxActive.Load())
+	}
+}
+
+// blockingOfflineRecognizer holds every Decode until release is closed and
+// records the peak number of concurrent decodes.
+type blockingOfflineRecognizer struct {
+	release   chan struct{}
+	entered   chan struct{}
+	active    atomic.Int32
+	maxActive atomic.Int32
+}
+
+func (r *blockingOfflineRecognizer) NewStream() (offlineStream, error) {
+	return &fakeOfflineStream{result: &sherpa.OfflineRecognizerResult{Text: "x"}}, nil
+}
+
+func (r *blockingOfflineRecognizer) Decode(offlineStream) error {
+	n := r.active.Add(1)
+	for {
+		peak := r.maxActive.Load()
+		if n <= peak || r.maxActive.CompareAndSwap(peak, n) {
+			break
+		}
+	}
+	r.entered <- struct{}{}
+	<-r.release
+	r.active.Add(-1)
+	return nil
+}
+
+func (r *blockingOfflineRecognizer) Close() error { return nil }
 
 func TestOfflineConfigDecodeLimitAndChunkOptions(t *testing.T) {
 	if got := (OfflineConfig{ModelFamily: OfflineFamilyWhisper}).maxDecodeSeconds(); got != 30 {

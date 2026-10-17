@@ -141,7 +141,7 @@ func TestLongAudioIntegration(t *testing.T) {
 	}
 }
 
-func readMonoWAV(t *testing.T, path string) []float32 {
+func readMonoWAV(t testing.TB, path string) []float32 {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {

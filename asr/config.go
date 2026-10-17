@@ -123,6 +123,11 @@ type OfflineConfig struct {
 	// only the first 30 s, and no limit otherwise.
 	MaxDecodeSeconds float32 `json:"max_decode_seconds,omitempty"`
 
+	// MaxConcurrentDecodes is how many decodes may share the native
+	// recognizer at once; zero or one serialises them. Each decode still uses
+	// NumThreads threads, so size the product to the cores available.
+	MaxConcurrentDecodes int `json:"max_concurrent_decodes,omitempty"`
+
 	// Chunking used by NewOfflineTranscriber; zero means the
 	// DefaultChunkOptions value. MaxChunkSeconds cannot exceed
 	// MaxDecodeDuration.
@@ -508,6 +513,9 @@ func (c *Config) validateOffline() []error {
 	}
 
 	errs = append(errs, validateOfflineFamilyPaths(offline)...)
+	if offline.MaxConcurrentDecodes < 0 {
+		errs = append(errs, fmt.Errorf("offline max concurrent decodes must not be negative, got %d", offline.MaxConcurrentDecodes))
+	}
 	if offline.MaxDecodeSeconds < 0 {
 		errs = append(errs, fmt.Errorf("offline max decode seconds must not be negative, got %g", offline.MaxDecodeSeconds))
 	}
