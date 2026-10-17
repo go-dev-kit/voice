@@ -124,7 +124,7 @@ type OfflineConfig struct {
 	MaxDecodeSeconds float32 `json:"max_decode_seconds,omitempty"`
 
 	// MaxConcurrentDecodes is how many decodes may share the native
-	// recognizer at once; zero or one serialises them. Each decode still uses
+	// recognizer at once; zero or one serializes them. Each decode still uses
 	// NumThreads threads, so size the product to the cores available.
 	MaxConcurrentDecodes int `json:"max_concurrent_decodes,omitempty"`
 

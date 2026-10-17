@@ -5,6 +5,7 @@ package voicekit
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	voiceasr "go.glpx.pro/gdk/voice/asr"
@@ -28,10 +29,14 @@ type VoiceKit struct {
 	synthesizer    types.SpeechSynthesizer
 	denoiser       types.SpeechDenoiser
 	metrics        *MetricsCollector
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
-// NewVoiceKit creates a new VoiceKit instance with the provided configuration
-func NewVoiceKit(config *Config) (*VoiceKit, error) {
+// NewVoiceKit creates a new VoiceKit instance with the provided configuration.
+// If a component fails to start, the ones already started are closed again.
+func NewVoiceKit(config *Config) (_ *VoiceKit, err error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -42,8 +47,14 @@ func NewVoiceKit(config *Config) (*VoiceKit, error) {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
+	vk := &VoiceKit{config: config, metrics: NewMetricsCollector()}
+	defer func() {
+		if err != nil {
+			_ = vk.Close()
+		}
+	}()
+
 	// Initialize speaker manager if configured
-	var speakerMgr *speaker.Manager
 	if config.Speaker.ModelPath != "" {
 		speakerConfig := &speaker.Config{
 			ModelPath:       config.Speaker.ModelPath,
@@ -56,10 +67,7 @@ func NewVoiceKit(config *Config) (*VoiceKit, error) {
 			MaxAge:          config.Speaker.MaxAge,
 			Logger:          config.Speaker.Logger,
 		}
-
-		var err error
-		speakerMgr, err = speaker.NewManager(speakerConfig)
-		if err != nil {
+		if vk.speakerManager, err = speaker.NewManager(speakerConfig); err != nil {
 			return nil, err
 		}
 	}
@@ -72,11 +80,10 @@ func NewVoiceKit(config *Config) (*VoiceKit, error) {
 		TempBufferSize:      8192, // Default buffer size
 		NormalizeFactor:     float32(config.Audio.NormalizeFactor),
 	}
-	audioConverter, err := audio.NewConverter(audioConfig)
-	if err != nil {
+	if vk.audioConverter, err = audio.NewConverter(audioConfig); err != nil {
 		return nil, fmt.Errorf("failed to create audio converter: %w", err)
 	}
-	audioResampler := audio.NewResampler(&audio.ResampleConfig{
+	vk.audioResampler = audio.NewResampler(&audio.ResampleConfig{
 		Method:       audio.MethodCubic,
 		Quality:      audio.QualityMedium,
 		FilterLength: 16,
@@ -84,33 +91,28 @@ func NewVoiceKit(config *Config) (*VoiceKit, error) {
 	})
 
 	// Optional speech-denoiser preprocessing stage for the full pipeline.
-	var denoiser types.SpeechDenoiser
 	if config.Denoiser.GtcrnModel != "" || config.Denoiser.DpdfNetModel != "" {
 		d, err := denoise.NewSherpaSpeechDenoiser(&config.Denoiser)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create speech denoiser: %w", err)
 		}
-		denoiser = d
+		vk.denoiser = d
 	}
 
-	var diarizationMgr *diarization.Manager
 	if config.Diarization.Enabled {
 		var speakerDB diarization.SpeakerDatabase
 		var extractor diarization.EmbeddingExtractor
-		if speakerMgr != nil {
-			adapter := &speakerDatabaseAdapter{manager: speakerMgr}
+		if vk.speakerManager != nil {
+			adapter := &speakerDatabaseAdapter{manager: vk.speakerManager}
 			speakerDB = adapter
 			extractor = adapter
 		}
-		diarizationMgr, err = diarization.NewManagerWithBackend(&config.Diarization, speakerDB, extractor)
-		if err != nil {
+		if vk.diarizationMgr, err = diarization.NewManagerWithBackend(&config.Diarization, speakerDB, extractor); err != nil {
 			return nil, fmt.Errorf("failed to create diarization manager: %w", err)
 		}
 	}
 
 	// Initialize ASR service if enabled
-	var asrService ASRService
-	var transcriber types.Transcriber
 	if config.ASR.Enabled {
 		switch config.ASR.Backend {
 		case voiceasr.BackendSherpaOnline:
@@ -118,39 +120,27 @@ func NewVoiceKit(config *Config) (*VoiceKit, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to create ASR service: %w", err)
 			}
-			asrService = service
+			vk.asrService = service
 		case voiceasr.BackendSherpaOffline:
 			offline, err := voiceasr.NewOfflineTranscriber(&config.ASR)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create ASR transcriber: %w", err)
 			}
-			transcriber = offline
+			vk.transcriber = offline
 		default:
 			return nil, fmt.Errorf("unsupported ASR backend %q", config.ASR.Backend)
 		}
 	}
 
-	var synthesizer types.SpeechSynthesizer
 	if config.TTS.Enabled {
 		synth, err := voicetts.NewSherpaOfflineSynthesizer(&config.TTS)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create TTS synthesizer: %w", err)
 		}
-		synthesizer = synth
+		vk.synthesizer = synth
 	}
 
-	return &VoiceKit{
-		config:         config,
-		speakerManager: speakerMgr,
-		audioConverter: audioConverter,
-		audioResampler: audioResampler,
-		diarizationMgr: diarizationMgr,
-		asrService:     asrService,
-		transcriber:    transcriber,
-		synthesizer:    synthesizer,
-		denoiser:       denoiser,
-		metrics:        NewMetricsCollector(),
-	}, nil
+	return vk, nil
 }
 
 // ASRService defines the interface for ASR services.
@@ -203,6 +193,11 @@ type StreamingDenoiser = types.StreamingDenoiser
 
 // Close releases all resources held by VoiceKit
 func (vk *VoiceKit) Close() error {
+	vk.closeOnce.Do(func() { vk.closeErr = vk.closeComponents() })
+	return vk.closeErr
+}
+
+func (vk *VoiceKit) closeComponents() error {
 	var errs []error
 	if vk.speakerManager != nil {
 		vk.speakerManager.Close()
