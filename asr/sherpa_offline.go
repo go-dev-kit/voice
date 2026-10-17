@@ -1,8 +1,10 @@
 package asr
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -66,6 +68,12 @@ func NewSherpaOfflineModel(config *Config) (*SherpaOfflineModel, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	if err := checkTransducerHint(config.Offline); err != nil {
+		return nil, err
+	}
+	if n := config.Offline.MaxConcurrentDecodes; n > 1 && config.Offline.effectiveConcurrentDecodes() == 1 && config.Logger != nil {
+		config.Logger.Warnf("offline family %s decodes one at a time; max_concurrent_decodes %d ignored", config.Offline.ModelFamily, n)
+	}
 
 	recognizerConfig, err := buildOfflineRecognizerConfig(config)
 	if err != nil {
@@ -82,8 +90,48 @@ func NewSherpaOfflineModel(config *Config) (*SherpaOfflineModel, error) {
 		quantization: config.Quantization,
 		recognizer:   &nativeOfflineRecognizer{recognizer: recognizer},
 		maxDecode:    secondsToDuration(config.Offline.maxDecodeSeconds()),
-		slots:        make(chan struct{}, max(config.Offline.MaxConcurrentDecodes, 1)),
+		slots:        make(chan struct{}, config.Offline.effectiveConcurrentDecodes()),
 	}, nil
+}
+
+// nemoMetadataTail is how much of the end of an encoder file is searched for
+// the metadata NeMo writes there.
+const nemoMetadataTail = 64 << 10
+
+// checkTransducerHint refuses an explicit model_type "transducer" on a NeMo
+// export before the native loader sees it: that hint selects the icefall
+// transducer loader, which exits the whole process on a NeMo model
+// ("'vocab_size' does not exist in the metadata"). NeMo stores its model class
+// (EncDecRNNTBPEModel and kin) in the encoder's metadata at the end of the
+// file. Icefall models, for which the hint is legitimate, carry no such class.
+func checkTransducerHint(offline OfflineConfig) error {
+	if offline.ModelFamily != OfflineFamilyTransducer || offline.ModelType != "transducer" {
+		return nil
+	}
+	if isNeMoExport(offline.EncoderPath) {
+		return fmt.Errorf("offline model_type %q loads icefall transducers, but %s is a NeMo export; set model_type %q or leave it empty", offline.ModelType, offline.EncoderPath, "nemo_transducer")
+	}
+	return nil
+}
+
+// isNeMoExport reports whether an ONNX file's trailing metadata names a NeMo
+// model class. Unreadable files report false and are left to the loader.
+func isNeMoExport(path string) bool {
+	f, err := os.Open(path) // #nosec G304 -- the path is the caller's configured model file
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	offset := max(info.Size()-nemoMetadataTail, 0)
+	tail := make([]byte, info.Size()-offset)
+	if _, err := f.ReadAt(tail, offset); err != nil {
+		return false
+	}
+	return bytes.Contains(tail, []byte("EncDecRNNT")) || bytes.Contains(tail, []byte("EncDecHybridRNNT"))
 }
 
 // NewOfflineTranscriber returns the long-audio-safe offline transcriber for

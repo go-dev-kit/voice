@@ -1,6 +1,7 @@
 package asr
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -712,5 +713,69 @@ func TestOfflineConfigJSONOmitsUnsetExtendedFields(t *testing.T) {
 		if strings.Contains(data, `"`+key+`"`) {
 			t.Errorf("unset %s serialized: %s", key, data)
 		}
+	}
+}
+
+func TestCheckTransducerHintRefusesNeMoExports(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, tail string) string {
+		path := filepath.Join(dir, name)
+		data := append(bytes.Repeat([]byte{0x7f}, 100<<10), tail...)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	nemo := write("nemo.onnx", "\x0avocab_size\x12\x048192\x0amodel_type\x12\x12EncDecRNNTBPEModel\x0amodel_author\x12\x04NeMo")
+	icefall := write("icefall.onnx", "\x0amodel_type\x12\x09zipformer\x0avocab_size\x12\x03500")
+
+	tests := []struct {
+		name      string
+		offline   OfflineConfig
+		wantError bool
+	}{
+		{"explicit transducer on NeMo", OfflineConfig{ModelFamily: OfflineFamilyTransducer, ModelType: "transducer", EncoderPath: nemo}, true},
+		{"explicit transducer on icefall", OfflineConfig{ModelFamily: OfflineFamilyTransducer, ModelType: "transducer", EncoderPath: icefall}, false},
+		{"nemo_transducer on NeMo", OfflineConfig{ModelFamily: OfflineFamilyTransducer, ModelType: "nemo_transducer", EncoderPath: nemo}, false},
+		{"empty hint on NeMo", OfflineConfig{ModelFamily: OfflineFamilyTransducer, EncoderPath: nemo}, false},
+		{"unreadable encoder", OfflineConfig{ModelFamily: OfflineFamilyTransducer, ModelType: "transducer", EncoderPath: filepath.Join(dir, "missing.onnx")}, false},
+		{"other family", OfflineConfig{ModelFamily: OfflineFamilyWhisper, ModelType: "transducer", EncoderPath: nemo}, false},
+	}
+	for _, tt := range tests {
+		err := checkTransducerHint(tt.offline)
+		if (err != nil) != tt.wantError {
+			t.Errorf("%s: err = %v, want error %v", tt.name, err, tt.wantError)
+		}
+		if err != nil && !strings.Contains(err.Error(), "nemo_transducer") {
+			t.Errorf("%s: error does not name nemo_transducer: %v", tt.name, err)
+		}
+	}
+}
+
+func TestEffectiveConcurrentDecodesClampsLLMFamilies(t *testing.T) {
+	for family, want := range map[string]int{
+		OfflineFamilyTransducer: 4,
+		OfflineFamilyWhisper:    4,
+		OfflineFamilyQwen3ASR:   1,
+		OfflineFamilyFunASRNano: 1,
+	} {
+		if got := (OfflineConfig{ModelFamily: family, MaxConcurrentDecodes: 4}).effectiveConcurrentDecodes(); got != want {
+			t.Errorf("%s: got %d, want %d", family, got, want)
+		}
+	}
+	if got := (OfflineConfig{ModelFamily: OfflineFamilyTransducer}).effectiveConcurrentDecodes(); got != 1 {
+		t.Errorf("unset: got %d, want 1", got)
+	}
+}
+
+func TestPathValidationErrorsAreSorted(t *testing.T) {
+	errs := requirePathSet("offline x", map[string]string{"zeta": "", "alpha": "", "mid": ""})
+	var got []string
+	for _, err := range errs {
+		got = append(got, err.Error())
+	}
+	want := []string{"offline x alpha path is required", "offline x mid path is required", "offline x zeta path is required"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("errors = %q, want %q", got, want)
 	}
 }

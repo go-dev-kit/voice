@@ -2,8 +2,10 @@ package asr
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"os"
+	"slices"
 	"time"
 )
 
@@ -126,6 +128,10 @@ type OfflineConfig struct {
 	// MaxConcurrentDecodes is how many decodes may share the native
 	// recognizer at once; zero or one serializes them. Each decode still uses
 	// NumThreads threads, so size the product to the cores available.
+	// Concurrent decodes are verified to match a lone decode for the
+	// transducer (Parakeet TDT) and whisper families. qwen3_asr and
+	// funasr_nano sample with an LLM decoder that may keep sampler state in
+	// the recognizer, so they always decode one at a time.
 	MaxConcurrentDecodes int `json:"max_concurrent_decodes,omitempty"`
 
 	// Chunking used by NewOfflineTranscriber; zero means the
@@ -135,6 +141,17 @@ type OfflineConfig struct {
 	ChunkOverlapSeconds   float32 `json:"chunk_overlap_seconds,omitempty"`
 	SpeechPaddingSeconds  float32 `json:"speech_padding_seconds,omitempty"`
 	SpeechMergeGapSeconds float32 `json:"speech_merge_gap_seconds,omitempty"`
+}
+
+// effectiveConcurrentDecodes is MaxConcurrentDecodes clamped to the families
+// that can share a recognizer: the LLM-decoder families stay serialized until
+// a gated equivalence test shows concurrent decodes give a lone decode's text.
+func (o OfflineConfig) effectiveConcurrentDecodes() int {
+	switch o.ModelFamily {
+	case OfflineFamilyQwen3ASR, OfflineFamilyFunASRNano:
+		return 1
+	}
+	return max(o.MaxConcurrentDecodes, 1)
 }
 
 // whisperWindowSeconds is the fixed input window of Whisper models.
@@ -587,15 +604,15 @@ func validateMoonshinePaths(offline OfflineConfig) []error {
 	hasV2 := offline.EncoderPath != "" && offline.MergedDecoderPath != ""
 
 	paths := map[string]string{"tokens": offline.TokensPath}
-	for name, path := range map[string]string{
-		"preprocessor":     offline.PreprocessorPath,
-		"encoder":          offline.EncoderPath,
-		"uncached decoder": offline.UncachedDecoderPath,
-		"cached decoder":   offline.CachedDecoderPath,
-		"merged decoder":   offline.MergedDecoderPath,
+	for _, field := range []struct{ name, path string }{
+		{"preprocessor", offline.PreprocessorPath},
+		{"encoder", offline.EncoderPath},
+		{"uncached decoder", offline.UncachedDecoderPath},
+		{"cached decoder", offline.CachedDecoderPath},
+		{"merged decoder", offline.MergedDecoderPath},
 	} {
-		if path != "" {
-			paths[name] = path
+		if field.path != "" {
+			paths[field.name] = field.path
 		}
 	}
 	errs := requirePathSet(label, paths)
@@ -618,7 +635,9 @@ func requireDirPath(label, name, path string) []error {
 
 func requirePathSet(label string, paths map[string]string) []error {
 	errs := make([]error, 0, len(paths))
-	for name, path := range paths {
+	// Sorted, so the joined validation error reads the same every time.
+	for _, name := range slices.Sorted(maps.Keys(paths)) {
+		path := paths[name]
 		if path == "" {
 			errs = append(errs, fmt.Errorf("%s %s path is required", label, name))
 			continue

@@ -34,6 +34,10 @@ type VoiceKit struct {
 	closeErr  error
 }
 
+// newDiarizationManager is the diarization constructor; a test replaces it to
+// fail a component that starts after the speaker manager.
+var newDiarizationManager = diarization.NewManagerWithBackend
+
 // NewVoiceKit creates a new VoiceKit instance with the provided configuration.
 // If a component fails to start, the ones already started are closed again.
 func NewVoiceKit(config *Config) (_ *VoiceKit, err error) {
@@ -107,7 +111,7 @@ func NewVoiceKit(config *Config) (_ *VoiceKit, err error) {
 			speakerDB = adapter
 			extractor = adapter
 		}
-		if vk.diarizationMgr, err = diarization.NewManagerWithBackend(&config.Diarization, speakerDB, extractor); err != nil {
+		if vk.diarizationMgr, err = newDiarizationManager(&config.Diarization, speakerDB, extractor); err != nil {
 			return nil, fmt.Errorf("failed to create diarization manager: %w", err)
 		}
 	}
