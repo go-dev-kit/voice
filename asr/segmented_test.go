@@ -66,7 +66,7 @@ func TestSegmentedTranscriberRejectsBadInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	//lint:ignore SA1012 deliberately nil to assert the nil-context check
-	if _, err := st.Transcribe(nil, []float32{1}, testRate); err == nil {
+	if _, err := st.Transcribe(nil, []float32{1}, testRate); err == nil { //nolint:staticcheck // deliberately passing nil ctx to assert validation
 		t.Fatal("expected error for nil context")
 	}
 	if _, err := st.Transcribe(context.Background(), nil, testRate); err == nil {
