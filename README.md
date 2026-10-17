@@ -366,7 +366,7 @@ type Logger interface {
 - **Language Support**: Determined by the configured Sherpa model
 - **Streaming Finalization**: `ProcessAudioChunk` returns partial results until native endpoint detection or VAD finalization produces a final result
 - **Long Offline Audio**: Sherpa offline Whisper keeps only the first 30 s of one decode and NeMo Parakeet exports fail from about 30 s, while Silero's `max_speech_duration` does not cap segment length. `asr.NewOfflineTranscriber` (used by `VoiceKit.Transcriber()`) therefore never hands a decoder more than `asr.MaxDecodeDuration` (25 s): it segments with VAD, merges short spans, and cuts longer spans at the quietest point with a 2 s overlap. A bare `SherpaOfflineModel` refuses over-long input with `*asr.AudioTooLongError` (30 s for Whisper by default, `Offline.MaxDecodeSeconds` otherwise) instead of truncating
-- **Offline Concurrency**: one `SherpaOfflineModel` decodes one request at a time; create several for parallel decodes
+- **Offline Concurrency**: one `SherpaOfflineModel` decodes one request at a time unless `Offline.MaxConcurrentDecodes` allows more on the shared native recognizer (verified to give identical text for Parakeet TDT and Whisper); queued callers leave the queue when their context ends, and `Close` waits for in-flight decodes
 
 ### TTS
 - **Model Dependencies**: Requires Sherpa offline TTS model files for the configured family
@@ -388,7 +388,6 @@ type Logger interface {
 ### Planned Improvements
 - **GPU Acceleration**: Enhanced CUDA/OpenCL integration for neural network inference
 - **Diarization Evaluation**: DER-focused benchmarks across Sherpa diarization models and thresholds
-- **ASR Model Expansion**: Additional Sherpa offline model families beyond transducer, Paraformer, CTC, SenseVoice, and Whisper
 - **TTS Evaluation**: MOS-style and latency benchmarks across Sherpa TTS model families
 - **Two-Pass Decoding**: CTC + attention for improved streaming accuracy
 - **WebRTC Integration**: Native WebRTC support for ultra-low latency streaming
@@ -1032,7 +1031,7 @@ Pure planning step: clamps, pads and merges speech spans, then cuts any span lon
 Returns a `SherpaSegmenter` for `silero_vad`/`ten_vad` (each call runs its own native detector, so calls may run concurrently; other sample rates are resampled for detection) or nil for `none`/`energy`.
 
 #### `asr.NewSherpaOfflineModel(config *voicekit.ASRConfig) (*SherpaOfflineModel, error)`
-Creates a single-decode Sherpa offline model. `Transcribe` refuses input longer than `Offline.MaxDecodeSeconds` (30 s for Whisper by default) with `*asr.AudioTooLongError`, checks the context again after waiting for the decode lock, and returns native Sherpa token metadata in `Transcription.Tokens`; it is not presented as word segmentation.
+Creates a Sherpa offline model for one of the `Offline.ModelFamily` values: `transducer` (set `ModelType: "nemo_transducer"` for Parakeet TDT), `paraformer`, `zipformer_ctc`, `nemo_ctc`, `wenet_ctc`, `omnilingual_ctc`, `med_asr_ctc`, `firered_asr_ctc`, `firered_asr`, `dolphin`, `tdnn`, `sense_voice`, `whisper`, `moonshine` (v1 or v2 file sets), `canary`, `cohere_transcribe`, `qwen3_asr` and `funasr_nano` (these two take a tokenizer directory instead of a tokens file). Validation requires every path the family needs, including `tokens` for every family except the two tokenizer-directory ones. `Transcribe` refuses input longer than `Offline.MaxDecodeSeconds` (30 s for Whisper by default) with `*asr.AudioTooLongError`, checks the context again after waiting for the decode lock, and returns native Sherpa token metadata in `Transcription.Tokens`; it is not presented as word segmentation.
 
 ### TTS Offline
 
