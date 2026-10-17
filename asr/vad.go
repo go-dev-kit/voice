@@ -220,7 +220,22 @@ func newSherpaVAD(config *VADConfig) (*sherpaVAD, error) {
 		return nil, fmt.Errorf("VAD model path is required for provider %s", config.Provider)
 	}
 
-	modelConfig := &sherpa.VadModelConfig{
+	switch config.Provider {
+	case VADProviderSilero, VADProviderTen:
+	default:
+		return nil, fmt.Errorf("unsupported sherpa VAD provider %q", config.Provider)
+	}
+	modelConfig := sherpaVADModelConfig(config)
+	vad := sherpa.NewVoiceActivityDetector(&modelConfig, config.BufferSizeSeconds)
+	if vad == nil {
+		return nil, fmt.Errorf("failed to create sherpa VAD provider %s", config.Provider)
+	}
+	return &sherpaVAD{provider: config.Provider, vad: vad}, nil
+}
+
+// sherpaVADModelConfig maps a Silero or TEN VAD config to the native config.
+func sherpaVADModelConfig(config *VADConfig) sherpa.VadModelConfig {
+	modelConfig := sherpa.VadModelConfig{
 		SampleRate: config.SampleRate,
 		NumThreads: config.NumThreads,
 		Provider:   config.RuntimeProvider,
@@ -234,20 +249,12 @@ func newSherpaVAD(config *VADConfig) (*sherpaVAD, error) {
 		WindowSize:         config.WindowSize,
 		MaxSpeechDuration:  config.MaxSpeechDuration,
 	}
-	switch config.Provider {
-	case VADProviderSilero:
-		modelConfig.SileroVad = model
-	case VADProviderTen:
+	if config.Provider == VADProviderTen {
 		modelConfig.TenVad = sherpa.TenVadModelConfig(model)
-	default:
-		return nil, fmt.Errorf("unsupported sherpa VAD provider %q", config.Provider)
+	} else {
+		modelConfig.SileroVad = model
 	}
-
-	vad := sherpa.NewVoiceActivityDetector(modelConfig, config.BufferSizeSeconds)
-	if vad == nil {
-		return nil, fmt.Errorf("failed to create sherpa VAD provider %s", config.Provider)
-	}
-	return &sherpaVAD{provider: config.Provider, vad: vad}, nil
+	return modelConfig
 }
 
 func (v *sherpaVAD) Process(audio []float32, state any) (*types.VADResult, error) {

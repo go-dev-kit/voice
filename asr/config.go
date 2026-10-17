@@ -2,7 +2,9 @@ package asr
 
 import (
 	"fmt"
+	"math"
 	"os"
+	"time"
 )
 
 const (
@@ -66,6 +68,59 @@ type OfflineConfig struct {
 	EnableTokenTimestamps       bool   `json:"enable_token_timestamps,omitempty"`
 	EnableSegmentTimestamps     bool   `json:"enable_segment_timestamps,omitempty"`
 	UseInverseTextNormalization bool   `json:"use_inverse_text_normalization,omitempty"`
+
+	// MaxDecodeSeconds makes one SherpaOfflineModel decode refuse longer input
+	// with an *AudioTooLongError instead of letting the model truncate it.
+	// Zero means the family default: 30 for whisper, whose fixed window keeps
+	// only the first 30 s, and no limit otherwise.
+	MaxDecodeSeconds float32 `json:"max_decode_seconds,omitempty"`
+
+	// Chunking used by NewOfflineTranscriber; zero means the
+	// DefaultChunkOptions value. MaxChunkSeconds cannot exceed
+	// MaxDecodeDuration.
+	MaxChunkSeconds       float32 `json:"max_chunk_seconds,omitempty"`
+	ChunkOverlapSeconds   float32 `json:"chunk_overlap_seconds,omitempty"`
+	SpeechPaddingSeconds  float32 `json:"speech_padding_seconds,omitempty"`
+	SpeechMergeGapSeconds float32 `json:"speech_merge_gap_seconds,omitempty"`
+}
+
+// whisperWindowSeconds is the fixed input window of Whisper models.
+const whisperWindowSeconds = 30
+
+// maxDecodeSeconds resolves MaxDecodeSeconds against the family default.
+func (o OfflineConfig) maxDecodeSeconds() float32 {
+	if o.MaxDecodeSeconds > 0 {
+		return o.MaxDecodeSeconds
+	}
+	if o.ModelFamily == OfflineFamilyWhisper {
+		return whisperWindowSeconds
+	}
+	return 0
+}
+
+// secondsToDuration converts a float32 config value in seconds to a duration
+// rounded to the millisecond, so 0.1 becomes 100ms rather than 100.000001ms.
+func secondsToDuration(v float32) time.Duration {
+	return time.Duration(math.Round(float64(v)*1000)) * time.Millisecond
+}
+
+// ChunkOptions resolves the chunking fields against DefaultChunkOptions.
+func (o OfflineConfig) ChunkOptions() ChunkOptions {
+	opts := DefaultChunkOptions()
+	seconds := secondsToDuration
+	if o.MaxChunkSeconds > 0 {
+		opts.MaxChunk = seconds(o.MaxChunkSeconds)
+	}
+	if o.ChunkOverlapSeconds > 0 {
+		opts.Overlap = seconds(o.ChunkOverlapSeconds)
+	}
+	if o.SpeechPaddingSeconds > 0 {
+		opts.Padding = seconds(o.SpeechPaddingSeconds)
+	}
+	if o.SpeechMergeGapSeconds > 0 {
+		opts.MergeGap = seconds(o.SpeechMergeGapSeconds)
+	}
+	return opts
 }
 
 // Config owns ASR runtime configuration.
@@ -428,6 +483,12 @@ func (c *Config) validateOffline() []error {
 		})...)
 	default:
 		errs = append(errs, fmt.Errorf("unsupported offline model family %q", offline.ModelFamily))
+	}
+	if offline.MaxDecodeSeconds < 0 {
+		errs = append(errs, fmt.Errorf("offline max decode seconds must not be negative, got %g", offline.MaxDecodeSeconds))
+	}
+	if err := offline.ChunkOptions().Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("offline chunking: %w", err))
 	}
 	return errs
 }

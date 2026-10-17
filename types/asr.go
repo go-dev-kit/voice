@@ -62,6 +62,16 @@ type Transcription struct {
 	Words      []Word        `json:"words,omitempty"`
 	StartTime  time.Duration `json:"start_time,omitempty"`
 	EndTime    time.Duration `json:"end_time,omitempty"`
+	// Segments is set by transcribers that decode audio in several pieces,
+	// with times relative to the start of the input.
+	Segments []TranscriptSegment `json:"segments,omitempty"`
+}
+
+// TranscriptSegment is the text of one decoded piece of a longer input.
+type TranscriptSegment struct {
+	Text      string        `json:"text"`
+	StartTime time.Duration `json:"start_time"`
+	EndTime   time.Duration `json:"end_time"`
 }
 
 // Token is a model-native ASR token with optional timing. Tokens may be

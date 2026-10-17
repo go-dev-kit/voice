@@ -120,11 +120,11 @@ func NewVoiceKit(config *Config) (*VoiceKit, error) {
 			}
 			asrService = service
 		case voiceasr.BackendSherpaOffline:
-			model, err := voiceasr.NewSherpaOfflineModel(&config.ASR)
+			offline, err := voiceasr.NewOfflineTranscriber(&config.ASR)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create ASR transcriber: %w", err)
 			}
-			transcriber = model
+			transcriber = offline
 		default:
 			return nil, fmt.Errorf("unsupported ASR backend %q", config.ASR.Backend)
 		}

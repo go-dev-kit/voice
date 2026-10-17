@@ -1,6 +1,9 @@
 package asr
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // StreamCapacityError reports that a new streaming session could not be
 // admitted because every configured stream slot is active. Callers can recover
@@ -38,4 +41,17 @@ func newError(op string, err error) *Error {
 
 func newSessionError(op, sessionID string, err error) *Error {
 	return &Error{Op: op, SessionID: sessionID, Err: err}
+}
+
+// AudioTooLongError reports input longer than one offline decode accepts. The
+// model refuses it rather than silently transcribing only a prefix; wrap the
+// model in a SegmentedTranscriber (or use NewOfflineTranscriber) to decode
+// long audio. Callers can recover it through errors.As.
+type AudioTooLongError struct {
+	Duration time.Duration
+	Limit    time.Duration
+}
+
+func (e *AudioTooLongError) Error() string {
+	return fmt.Sprintf("audio is %s long, one offline decode accepts at most %s", e.Duration, e.Limit)
 }

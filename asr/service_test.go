@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1105,4 +1106,93 @@ func (s *fakeOnlineStream) InputFinished() error {
 func (s *fakeOnlineStream) Close() error {
 	s.closeCount++
 	return nil
+}
+
+func TestSherpaOfflineModelRefusesAudioOverItsLimit(t *testing.T) {
+	stream := &fakeOfflineStream{result: &sherpa.OfflineRecognizerResult{Text: "ok"}}
+	model := &SherpaOfflineModel{recognizer: &fakeOfflineRecognizer{stream: stream}, maxDecode: 30 * time.Second}
+
+	_, err := model.Transcribe(context.Background(), make([]float32, 31*16000), 16000)
+	var tooLong *AudioTooLongError
+	if !errors.As(err, &tooLong) || tooLong.Limit != 30*time.Second || tooLong.Duration != 31*time.Second {
+		t.Fatalf("got %v, want *AudioTooLongError 31s > 30s", err)
+	}
+	if !strings.Contains(err.Error(), "at most 30s") || stream.acceptedSamples != nil {
+		t.Fatalf("refused audio still reached the decoder or message unclear: %v", err)
+	}
+	if _, err := model.Transcribe(context.Background(), make([]float32, 30*16000), 16000); err != nil {
+		t.Fatalf("audio at the limit: %v", err)
+	}
+}
+
+func TestSherpaOfflineModelChecksContextAfterQueueing(t *testing.T) {
+	stream := &fakeOfflineStream{}
+	model := &SherpaOfflineModel{recognizer: &fakeOfflineRecognizer{stream: stream}}
+	model.mu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := model.Transcribe(ctx, []float32{0.1}, 16000)
+		done <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // let the call queue on the lock
+	cancel()
+	model.mu.Unlock()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+	if stream.acceptedSamples != nil {
+		t.Fatal("a canceled caller still decoded")
+	}
+}
+
+func TestOfflineConfigDecodeLimitAndChunkOptions(t *testing.T) {
+	if got := (OfflineConfig{ModelFamily: OfflineFamilyWhisper}).maxDecodeSeconds(); got != 30 {
+		t.Fatalf("whisper default limit %v, want 30", got)
+	}
+	if got := (OfflineConfig{ModelFamily: OfflineFamilyTransducer}).maxDecodeSeconds(); got != 0 {
+		t.Fatalf("transducer default limit %v, want none", got)
+	}
+	if got := (OfflineConfig{ModelFamily: OfflineFamilyWhisper, MaxDecodeSeconds: 12}).maxDecodeSeconds(); got != 12 {
+		t.Fatalf("explicit limit %v, want 12", got)
+	}
+
+	if got := (OfflineConfig{}).ChunkOptions(); got != DefaultChunkOptions() {
+		t.Fatalf("zero config chunking %+v, want defaults", got)
+	}
+	got := OfflineConfig{MaxChunkSeconds: 20, ChunkOverlapSeconds: 1.5, SpeechPaddingSeconds: 0.1, SpeechMergeGapSeconds: 0.5}.ChunkOptions()
+	want := ChunkOptions{MaxChunk: 20 * time.Second, Overlap: 1500 * time.Millisecond, Padding: 100 * time.Millisecond, MergeGap: 500 * time.Millisecond, CutSearch: DefaultChunkOptions().CutSearch}
+	if got != want {
+		t.Fatalf("ChunkOptions() = %+v, want %+v", got, want)
+	}
+}
+
+func TestValidateOfflineChunkingAndLimit(t *testing.T) {
+	for name, mutate := range map[string]func(*Config){
+		"chunk over cap":   func(c *Config) { c.Offline.MaxChunkSeconds = 40 },
+		"negative limit":   func(c *Config) { c.Offline.MaxDecodeSeconds = -1 },
+		"overlap too wide": func(c *Config) { c.Offline.MaxChunkSeconds = 10; c.Offline.ChunkOverlapSeconds = 6 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := DefaultConfig()
+			config.Enabled = true
+			config.Offline.ModelFamily = OfflineFamilySenseVoice
+			config.Offline.ModelPath = tempModelFile(t, "model.onnx")
+			mutate(&config)
+			if err := config.Validate(); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestNewOfflineTranscriberRejectsInvalidConfig(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	if _, err := NewOfflineTranscriber(&config); err == nil {
+		t.Fatal("expected error without model paths")
+	}
+	if _, err := NewOfflineTranscriber(nil); err == nil {
+		t.Fatal("expected error for nil config")
+	}
 }

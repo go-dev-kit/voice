@@ -11,11 +11,16 @@ import (
 )
 
 // SherpaOfflineModel implements batch ASR with Sherpa ONNX OfflineRecognizer.
+// One Transcribe call is one decode: input longer than the model handles is
+// refused (see OfflineConfig.MaxDecodeSeconds), never truncated. Use
+// NewOfflineTranscriber for audio of any length.
 type SherpaOfflineModel struct {
 	name         string
 	language     string
 	quantization string
 	recognizer   offlineRecognizer
+	// maxDecode is the longest input one decode accepts; zero means no limit.
+	maxDecode time.Duration
 
 	mu     sync.Mutex
 	closed bool
@@ -59,7 +64,36 @@ func NewSherpaOfflineModel(config *Config) (*SherpaOfflineModel, error) {
 		language:     config.Offline.Language,
 		quantization: config.Quantization,
 		recognizer:   &nativeOfflineRecognizer{recognizer: recognizer},
+		maxDecode:    secondsToDuration(config.Offline.maxDecodeSeconds()),
 	}, nil
+}
+
+// NewOfflineTranscriber returns the long-audio-safe offline transcriber for
+// config: a SherpaOfflineModel wrapped in a SegmentedTranscriber that cuts the
+// input into decodes of at most config.Offline.ChunkOptions().MaxChunk. With a
+// Silero or TEN VAD configured (VADProvider, VADModelPath) it decodes only the
+// speech; otherwise the whole input is cut at quiet points.
+func NewOfflineTranscriber(config *Config) (*SegmentedTranscriber, error) {
+	model, err := NewSherpaOfflineModel(config)
+	if err != nil {
+		return nil, err
+	}
+	var segmenter SpeechSegmenter
+	if config.VADProvider != VADProviderNone && config.VADProvider != VADProviderEnergy {
+		if segmenter, err = NewSpeechSegmenter(vadConfigFromASR(config)); err != nil {
+			_ = model.Close()
+			return nil, fmt.Errorf("create speech segmenter: %w", err)
+		}
+	}
+	transcriber, err := NewSegmentedTranscriber(model, segmenter, config.Offline.ChunkOptions())
+	if err != nil {
+		_ = model.Close()
+		if segmenter != nil {
+			_ = segmenter.Close()
+		}
+		return nil, err
+	}
+	return transcriber, nil
 }
 
 func buildOfflineRecognizerConfig(config *Config) (*sherpa.OfflineRecognizerConfig, error) {
@@ -131,6 +165,9 @@ func (m *SherpaOfflineModel) Transcribe(ctx context.Context, audio []float32, sa
 	if sampleRate <= 0 {
 		return nil, fmt.Errorf("sampleRate must be positive, got %d", sampleRate)
 	}
+	if duration := samplesToDuration(len(audio), sampleRate); m.maxDecode > 0 && duration > m.maxDecode {
+		return nil, &AudioTooLongError{Duration: duration, Limit: m.maxDecode}
+	}
 
 	select {
 	case <-ctx.Done():
@@ -142,6 +179,11 @@ func (m *SherpaOfflineModel) Transcribe(ctx context.Context, audio []float32, sa
 	defer m.mu.Unlock()
 	if m.closed || m.recognizer == nil {
 		return nil, fmt.Errorf("sherpa offline recognizer is closed")
+	}
+	// Decodes run one at a time; a caller that gave up while queued must not
+	// still cost a full decode.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	stream, err := m.recognizer.NewStream()
