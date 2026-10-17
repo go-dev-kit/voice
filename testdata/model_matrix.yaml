@@ -36,9 +36,9 @@ asr_offline:
       hf: csukuangfj/sherpa-onnx-paraformer-zh
       url: ""
       sha256: ""
-    - family: nemo_ctc
+    - family: transducer          # model_type nemo_transducer
       hf: nvidia/parakeet-tdt-0.6b-v3
-      note: top batch WER on the Open ASR leaderboard (GPU-favoured)
+      note: top batch WER on the Open ASR leaderboard; sherpa int8 export ~15x real time on 4 CPU threads (FLEURS de 6.9% WER)
       url: ""
       sha256: ""
 
@@ -68,10 +68,11 @@ vad:
   default: silero_vad
   models:
     - provider: silero_vad
-      hf: onnx-community/silero-vad          # Silero v6, MIT
+      hf: onnx-community/silero-vad          # Silero, MIT
       file: silero_vad.onnx
-      url: ""
-      sha256: ""
+      # sherpa-onnx asr-models release asset; used by the long-audio segmenter tests
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+      sha256: "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
     - provider: ten_vad
       hf: TEN-framework/ten-vad              # modified Apache-2.0, opt-in
       url: ""

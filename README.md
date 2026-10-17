@@ -14,7 +14,7 @@ A reusable Go 1.26.4 library for local voice processing experiments and audio pl
 | --- | --- | --- |
 | Audio conversion/resampling | Usable foundation | WAV/PCM encode/decode; FLAC/MP3/Ogg-Vorbis decode via pure-Go libraries. AAC/M4A and compressed encoding return explicit unsupported errors. |
 | Speaker recognition | Experimental but real | Sherpa speaker embedding model path and speaker data directory. Speaker embedding streams are single-use and released after extraction. |
-| ASR | Sherpa offline transcriber plus bounded Sherpa online streaming service | Offline or online Sherpa model files. Streaming admission enforces `MaxConcurrentStreams`; model-native token timing is exposed separately from real word segmentation. |
+| ASR | Long-audio-safe Sherpa offline transcriber plus bounded Sherpa online streaming service | Offline or online Sherpa model files. Offline input of any length is cut into decodes of at most 25 s (Silero/TEN VAD segmentation when configured), never truncated. Streaming admission enforces `MaxConcurrentStreams`; model-native token timing is exposed separately from real word segmentation. |
 | VAD | Runtime seam with explicit providers | `none`, `energy`, or Sherpa Silero/TEN with a configured model path. |
 | Diarization | Sherpa offline diarization backend | Segmentation and embedding model paths. The old silence/clustering path is an explicit `basic` backend for tests/local experiments. |
 | TTS | Sherpa offline and streaming speech synthesis | VITS, Matcha, Kokoro, KittenTTS, ZipVoice, Pocket, or Supertonic model files. TTS enabled without required backend paths is a validation error. |
@@ -43,7 +43,7 @@ Runs on sherpa-onnx-go v1.13.8 (ONNX Runtime 1.28.2). Local and CI verification 
 Add the released module to your project:
 
 ```bash
-go get go.glpx.pro/gdk/voice@v0.4.2
+go get go.glpx.pro/gdk/voice@latest
 ```
 
 ## Architecture Overview
@@ -365,6 +365,8 @@ type Logger interface {
 - **Runtime Provider**: CPU is the default; CUDA/CoreML availability depends on the Sherpa build and platform
 - **Language Support**: Determined by the configured Sherpa model
 - **Streaming Finalization**: `ProcessAudioChunk` returns partial results until native endpoint detection or VAD finalization produces a final result
+- **Long Offline Audio**: Sherpa offline Whisper keeps only the first 30 s of one decode and NeMo Parakeet exports fail from about 30 s, while Silero's `max_speech_duration` does not cap segment length. `asr.NewOfflineTranscriber` (used by `VoiceKit.Transcriber()`) therefore never hands a decoder more than `asr.MaxDecodeDuration` (25 s): it segments with VAD, merges short spans, and cuts longer spans at the quietest point with a 2 s overlap. A bare `SherpaOfflineModel` refuses over-long input with `*asr.AudioTooLongError` (30 s for Whisper by default, `Offline.MaxDecodeSeconds` otherwise) instead of truncating
+- **Offline Concurrency**: one `SherpaOfflineModel` decodes one request at a time; create several for parallel decodes
 
 ### TTS
 - **Model Dependencies**: Requires Sherpa offline TTS model files for the configured family
@@ -574,8 +576,11 @@ package main
 import (
     "context"
     "log"
+    "os"
+    "time"
 
     "go.glpx.pro/gdk/voice"
+    "go.glpx.pro/gdk/voice/audio"
 )
 
 func main() {
@@ -586,10 +591,18 @@ func main() {
             DefaultModel: "sherpa_offline",
             Language:     "en",
             Offline: voicekit.OfflineConfig{
-                ModelFamily: "sense_voice",
-                ModelPath:   "/models/sherpa/sense-voice.onnx",
+                ModelFamily: "transducer",
+                ModelType:   "nemo_transducer", // Parakeet TDT
+                TokensPath:  "/models/parakeet/tokens.txt",
+                EncoderPath: "/models/parakeet/encoder.int8.onnx",
+                DecoderPath: "/models/parakeet/decoder.int8.onnx",
+                JoinerPath:  "/models/parakeet/joiner.int8.onnx",
                 Language:    "en",
             },
+            // Optional: decode only the speech. Without a VAD the whole
+            // input is still cut into decodes of at most 25 s.
+            VADProvider:  "silero_vad",
+            VADModelPath: "/models/silero_vad.onnx",
         },
     }
 
@@ -599,7 +612,13 @@ func main() {
     }
     defer vk.Close()
 
-    result, err := vk.Transcriber().Transcribe(context.Background(), loadSamples(), 16000)
+    // Any length works; result.Segments holds one entry per decode.
+    data, _ := os.ReadFile("meeting.mp3")
+    samples, err := audio.DecodeMono(data, audio.FormatMP3, 16000, audio.DecodeLimits{MaxDuration: 4 * time.Hour})
+    if err != nil {
+        log.Fatal(err)
+    }
+    result, err := vk.Transcriber().Transcribe(context.Background(), samples, 16000)
     if err != nil {
         log.Fatal(err)
     }
@@ -827,6 +846,9 @@ Deletes a speaker from the database.
 
 ### Audio Processing
 
+#### `audio.DecodeMono(data []byte, format AudioFormat, targetRate int, limits DecodeLimits) ([]float32, error)`
+Decodes a complete WAV (8/16/24/32-bit PCM or 32/64-bit float), FLAC, MP3 or Ogg/Vorbis file, averages its channels and resamples it with a band-limited windowed-sinc filter. `DecodeLimits.MaxDuration` stops decoding as soon as the audio passes the limit and returns `*audio.DurationLimitError`, so a small compressed upload cannot expand to gigabytes. `audio.Decode` returns the native rate and channels instead.
+
 #### `audio.NewConverter(config *ConverterConfig) *Converter`
 Creates a new audio converter.
 
@@ -997,11 +1019,20 @@ Closes the ASR service and releases all resources.
 
 ### ASR Offline
 
-#### `asr.NewSherpaOfflineModel(config *voicekit.ASRConfig) (*SherpaOfflineModel, error)`
-Creates a Sherpa offline transcriber for complete audio inputs.
+#### `asr.NewOfflineTranscriber(config *voicekit.ASRConfig) (*SegmentedTranscriber, error)`
+Creates the long-audio-safe offline transcriber: a `SherpaOfflineModel` behind a `SegmentedTranscriber`, with a Silero/TEN `SpeechSegmenter` when `VADProvider` names one. Chunking comes from `Offline.MaxChunkSeconds`, `ChunkOverlapSeconds`, `SpeechPaddingSeconds` and `SpeechMergeGapSeconds` (zero means the `DefaultChunkOptions` value).
 
-#### `(*SherpaOfflineModel) Transcribe(ctx context.Context, audio []float32, sampleRate int) (*types.Transcription, error)`
-Transcribes a complete audio buffer with non-empty audio validation before native Sherpa calls. Native Sherpa token metadata is returned in `Transcription.Tokens`; it is not presented as word segmentation.
+#### `asr.NewSegmentedTranscriber(inner types.Transcriber, segmenter SpeechSegmenter, opts ChunkOptions) (*SegmentedTranscriber, error)`
+Wraps any offline transcriber. `Transcribe` finds speech with the segmenter (nil means the whole input), plans chunks with `PlanChunks`, decodes them in order, and stitches them: around an overlapping cut, tokens are kept per word by timestamp when the model's tokens spell its text, otherwise repeated words are dropped from the text. `Transcription.Segments` holds one entry per decode and `Transcription.Tokens` carries absolute token times. Silence returns an empty transcription. Context cancellation is checked between decodes.
+
+#### `asr.PlanChunks(spans []SpeechSpan, samples []float32, sampleRate int, opts ChunkOptions) ([]Chunk, error)`
+Pure planning step: clamps, pads and merges speech spans, then cuts any span longer than `opts.MaxChunk` (at most `asr.MaxDecodeDuration`) at the quietest 200 ms within `opts.CutSearch` of the cap, with `opts.Overlap` of shared audio. Every speech sample belongs to exactly one chunk's keep range.
+
+#### `asr.NewSpeechSegmenter(config *VADConfig) (SpeechSegmenter, error)`
+Returns a `SherpaSegmenter` for `silero_vad`/`ten_vad` (each call runs its own native detector, so calls may run concurrently; other sample rates are resampled for detection) or nil for `none`/`energy`.
+
+#### `asr.NewSherpaOfflineModel(config *voicekit.ASRConfig) (*SherpaOfflineModel, error)`
+Creates a single-decode Sherpa offline model. `Transcribe` refuses input longer than `Offline.MaxDecodeSeconds` (30 s for Whisper by default) with `*asr.AudioTooLongError`, checks the context again after waiting for the decode lock, and returns native Sherpa token metadata in `Transcription.Tokens`; it is not presented as word segmentation.
 
 ### TTS Offline
 
