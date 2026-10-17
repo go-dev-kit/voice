@@ -14,7 +14,7 @@ var benchmarkSliceSink []float32
 
 // TestBenchmarkRunner tests the benchmark runner functionality
 func TestBenchmarkRunner(t *testing.T) {
-	runner := NewBenchmarkRunner("test_benchmarks")
+	runner := NewBenchmarkRunner(t.TempDir())
 
 	// Test basic functionality
 	if runner == nil {
