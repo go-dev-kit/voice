@@ -49,9 +49,9 @@ func offlineIntegrationConfigured(config OfflineConfig) bool {
 	case OfflineFamilyParaformer, OfflineFamilyZipformerCTC, OfflineFamilyNemoCTC:
 		return config.TokensPath != "" && config.ModelPath != ""
 	case OfflineFamilySenseVoice:
-		return config.ModelPath != ""
+		return config.TokensPath != "" && config.ModelPath != ""
 	case OfflineFamilyWhisper:
-		return config.EncoderPath != "" && config.DecoderPath != ""
+		return config.TokensPath != "" && config.EncoderPath != "" && config.DecoderPath != ""
 	default:
 		return false
 	}

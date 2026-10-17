@@ -237,8 +237,20 @@ func TestValidateOfflineRequiredPathMatrix(t *testing.T) {
 		{OfflineFamilyParaformer, []string{"tokens", "model"}},
 		{OfflineFamilyZipformerCTC, []string{"tokens", "model"}},
 		{OfflineFamilyNemoCTC, []string{"tokens", "model"}},
-		{OfflineFamilySenseVoice, []string{"model"}},
-		{OfflineFamilyWhisper, []string{"encoder", "decoder"}},
+		{OfflineFamilySenseVoice, []string{"tokens", "model"}},
+		{OfflineFamilyWhisper, []string{"tokens", "encoder", "decoder"}},
+		{OfflineFamilyFunASRNano, []string{"encoder adaptor", "llm", "embedding", "tokenizer"}},
+		{OfflineFamilyMoonshine, []string{"tokens", "requires either the v1 paths"}},
+		{OfflineFamilyQwen3ASR, []string{"conv frontend", "encoder", "decoder", "tokenizer"}},
+		{OfflineFamilyCanary, []string{"tokens", "encoder", "decoder"}},
+		{OfflineFamilyCohereTranscribe, []string{"tokens", "encoder", "decoder"}},
+		{OfflineFamilyWenetCTC, []string{"tokens", "model"}},
+		{OfflineFamilyOmnilingualCTC, []string{"tokens", "model"}},
+		{OfflineFamilyMedASRCTC, []string{"tokens", "model"}},
+		{OfflineFamilyFireRedASRCTC, []string{"tokens", "model"}},
+		{OfflineFamilyDolphin, []string{"tokens", "model"}},
+		{OfflineFamilyTDNN, []string{"tokens", "model"}},
+		{OfflineFamilyFireRedASR, []string{"tokens", "encoder", "decoder"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.family, func(t *testing.T) {

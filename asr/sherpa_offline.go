@@ -112,7 +112,7 @@ func offlineSegmenter(config *Config) (SpeechSegmenter, error) {
 func buildOfflineRecognizerConfig(config *Config) (*sherpa.OfflineRecognizerConfig, error) {
 	offline := config.Offline
 	modelType := offline.ModelType
-	if modelType == "" {
+	if modelType == "" && hintsSherpaModelType(offline.ModelFamily) {
 		modelType = offline.ModelFamily
 	}
 
@@ -154,7 +154,9 @@ func buildOfflineRecognizerConfig(config *Config) (*sherpa.OfflineRecognizerConf
 			EnableSegmentTimestamps: boolToInt(offline.EnableSegmentTimestamps),
 		}
 	default:
-		return nil, fmt.Errorf("unsupported offline model family %q", offline.ModelFamily)
+		if err := applyExtendedOfflineFamily(&modelConfig, offline); err != nil {
+			return nil, err
+		}
 	}
 
 	return &sherpa.OfflineRecognizerConfig{
@@ -166,6 +168,106 @@ func buildOfflineRecognizerConfig(config *Config) (*sherpa.OfflineRecognizerConf
 		DecodingMethod: config.DecodingMethod,
 		MaxActivePaths: config.MaxActivePaths,
 	}, nil
+}
+
+// hintsSherpaModelType reports whether the family name doubles as the sherpa
+// model_type hint when OfflineConfig.ModelType is empty. Only the original six
+// families do; the extended families leave the hint empty so sherpa detects the
+// model from its metadata, which is what the serving app did before this
+// package owned the mapping.
+func hintsSherpaModelType(family string) bool {
+	switch family {
+	case OfflineFamilyTransducer, OfflineFamilyParaformer, OfflineFamilyZipformerCTC,
+		OfflineFamilyNemoCTC, OfflineFamilySenseVoice, OfflineFamilyWhisper:
+		return true
+	}
+	return false
+}
+
+// applyExtendedOfflineFamily maps the offline families added after the original
+// six onto modelConfig. It returns an error for a family it does not know.
+//
+// Tokens (already set from OfflineConfig.TokensPath by the caller) is cleared
+// for funasr_nano and qwen3_asr: sherpa reads their vocabulary from the
+// tokenizer directory and never uses tokens.txt.
+func applyExtendedOfflineFamily(modelConfig *sherpa.OfflineModelConfig, offline OfflineConfig) error {
+	switch offline.ModelFamily {
+	case OfflineFamilyFunASRNano:
+		modelConfig.Tokens = ""
+		modelConfig.FunAsrNano = sherpa.OfflineFunASRNanoModelConfig{
+			EncoderAdaptor:              offline.EncoderAdaptorPath,
+			LLM:                         offline.LLMPath,
+			Embedding:                   offline.EmbeddingPath,
+			Tokenizer:                   offline.TokenizerPath,
+			SystemPrompt:                offline.SystemPrompt,
+			UserPrompt:                  offline.UserPrompt,
+			MaxNewTokens:                offline.MaxNewTokens,
+			Temperature:                 offline.Temperature,
+			TopP:                        offline.TopP,
+			Seed:                        offline.Seed,
+			Language:                    offline.Language,
+			UseInverseTextNormalization: boolToInt(offline.UseInverseTextNormalization),
+			Hotwords:                    offline.Hotwords,
+		}
+	case OfflineFamilyMoonshine:
+		modelConfig.Moonshine = sherpa.OfflineMoonshineModelConfig{
+			Preprocessor:    offline.PreprocessorPath,
+			Encoder:         offline.EncoderPath,
+			UncachedDecoder: offline.UncachedDecoderPath,
+			CachedDecoder:   offline.CachedDecoderPath,
+			MergedDecoder:   offline.MergedDecoderPath,
+		}
+	case OfflineFamilyQwen3ASR:
+		modelConfig.Tokens = ""
+		modelConfig.Qwen3ASR = sherpa.OfflineQwen3ASRModelConfig{
+			ConvFrontend: offline.ConvFrontendPath,
+			Encoder:      offline.EncoderPath,
+			Decoder:      offline.DecoderPath,
+			Tokenizer:    offline.TokenizerPath,
+			MaxTotalLen:  offline.MaxTotalLen,
+			MaxNewTokens: offline.MaxNewTokens,
+			Temperature:  offline.Temperature,
+			TopP:         offline.TopP,
+			Seed:         offline.Seed,
+			Hotwords:     offline.Hotwords,
+		}
+	case OfflineFamilyCanary:
+		modelConfig.Canary = sherpa.OfflineCanaryModelConfig{
+			Encoder: offline.EncoderPath,
+			Decoder: offline.DecoderPath,
+			SrcLang: offline.SrcLang,
+			TgtLang: offline.TgtLang,
+			UsePnc:  boolToInt(offline.UsePunctuation),
+		}
+	case OfflineFamilyCohereTranscribe:
+		modelConfig.CohereTranscribe = sherpa.OfflineCohereTranscribeModelConfig{
+			Encoder:                     offline.EncoderPath,
+			Decoder:                     offline.DecoderPath,
+			Language:                    offline.Language,
+			UsePunct:                    boolToInt(offline.UsePunctuation),
+			UseInverseTextNormalization: boolToInt(offline.UseInverseTextNormalization),
+		}
+	case OfflineFamilyWenetCTC:
+		modelConfig.WenetCtc = sherpa.OfflineWenetCtcModelConfig{Model: offline.ModelPath}
+	case OfflineFamilyOmnilingualCTC:
+		modelConfig.Omnilingual = sherpa.OfflineOmnilingualAsrCtcModelConfig{Model: offline.ModelPath}
+	case OfflineFamilyMedASRCTC:
+		modelConfig.MedAsr = sherpa.OfflineMedAsrCtcModelConfig{Model: offline.ModelPath}
+	case OfflineFamilyFireRedASRCTC:
+		modelConfig.FireRedAsrCtc = sherpa.OfflineFireRedAsrCtcModelConfig{Model: offline.ModelPath}
+	case OfflineFamilyDolphin:
+		modelConfig.Dolphin = sherpa.OfflineDolphinModelConfig{Model: offline.ModelPath}
+	case OfflineFamilyTDNN:
+		modelConfig.Tdnn = sherpa.OfflineTdnnModelConfig{Model: offline.ModelPath}
+	case OfflineFamilyFireRedASR:
+		modelConfig.FireRedAsr = sherpa.OfflineFireRedAsrModelConfig{
+			Encoder: offline.EncoderPath,
+			Decoder: offline.DecoderPath,
+		}
+	default:
+		return fmt.Errorf("unsupported offline model family %q", offline.ModelFamily)
+	}
+	return nil
 }
 
 func (m *SherpaOfflineModel) Transcribe(ctx context.Context, audio []float32, sampleRate int) (transcription *types.Transcription, err error) {

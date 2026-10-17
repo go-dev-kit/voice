@@ -62,6 +62,7 @@ func TestBuildOfflineRecognizerConfigMapsWhisper(t *testing.T) {
 		ModelFamily:             OfflineFamilyWhisper,
 		EncoderPath:             tempModelFile(t, "whisper-encoder.onnx"),
 		DecoderPath:             tempModelFile(t, "whisper-decoder.onnx"),
+		TokensPath:              tempModelFile(t, "whisper-tokens.txt"),
 		Language:                "en",
 		Task:                    "translate",
 		TailPaddings:            4,
@@ -1178,6 +1179,7 @@ func TestValidateOfflineChunkingAndLimit(t *testing.T) {
 			config.Enabled = true
 			config.Offline.ModelFamily = OfflineFamilySenseVoice
 			config.Offline.ModelPath = tempModelFile(t, "model.onnx")
+			config.Offline.TokensPath = tempModelFile(t, "tokens.txt")
 			mutate(&config)
 			if err := config.Validate(); err == nil {
 				t.Fatal("expected validation error")

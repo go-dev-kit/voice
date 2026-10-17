@@ -18,6 +18,21 @@ const (
 	OfflineFamilySenseVoice   = "sense_voice"
 	OfflineFamilyWhisper      = "whisper"
 
+	// Families added after the original six. Each maps onto the Sherpa
+	// offline model config of the same name; see applyExtendedOfflineFamily.
+	OfflineFamilyFunASRNano       = "funasr_nano"
+	OfflineFamilyMoonshine        = "moonshine"
+	OfflineFamilyQwen3ASR         = "qwen3_asr"
+	OfflineFamilyCanary           = "canary"
+	OfflineFamilyCohereTranscribe = "cohere_transcribe"
+	OfflineFamilyWenetCTC         = "wenet_ctc"
+	OfflineFamilyOmnilingualCTC   = "omnilingual_ctc"
+	OfflineFamilyMedASRCTC        = "med_asr_ctc"
+	OfflineFamilyFireRedASRCTC    = "firered_asr_ctc"
+	OfflineFamilyDolphin          = "dolphin"
+	OfflineFamilyTDNN             = "tdnn"
+	OfflineFamilyFireRedASR       = "firered_asr"
+
 	// VAD providers. "none" and "energy" are dependency-free; the neural
 	// providers require a model path (see validateVAD). Recommended default for
 	// production is Silero VAD (v6.x, MIT-licensed, ~6000 languages). TEN VAD can
@@ -62,12 +77,45 @@ type OfflineConfig struct {
 	JoinerPath  string `json:"joiner_path,omitempty"`
 	ModelPath   string `json:"model_path,omitempty"`
 
+	// Multi-file layouts of the extended families. Moonshine v1 uses
+	// PreprocessorPath, EncoderPath, UncachedDecoderPath and CachedDecoderPath;
+	// v2 uses EncoderPath and MergedDecoderPath.
+	PreprocessorPath    string `json:"preprocessor_path,omitempty"`
+	UncachedDecoderPath string `json:"uncached_decoder_path,omitempty"`
+	CachedDecoderPath   string `json:"cached_decoder_path,omitempty"`
+	MergedDecoderPath   string `json:"merged_decoder_path,omitempty"`
+	ConvFrontendPath    string `json:"conv_frontend_path,omitempty"`
+	EncoderAdaptorPath  string `json:"encoder_adaptor_path,omitempty"`
+	LLMPath             string `json:"llm_path,omitempty"`
+	EmbeddingPath       string `json:"embedding_path,omitempty"`
+	// TokenizerPath is a directory (vocab.json, merges.txt, ...) for
+	// funasr_nano and qwen3_asr, not a file.
+	TokenizerPath string `json:"tokenizer_path,omitempty"`
+
 	Language                    string `json:"language,omitempty"`
 	Task                        string `json:"task,omitempty"`
 	TailPaddings                int    `json:"tail_paddings,omitempty"`
 	EnableTokenTimestamps       bool   `json:"enable_token_timestamps,omitempty"`
 	EnableSegmentTimestamps     bool   `json:"enable_segment_timestamps,omitempty"`
 	UseInverseTextNormalization bool   `json:"use_inverse_text_normalization,omitempty"`
+
+	// Canary translation languages and the punctuation flag shared by canary
+	// and cohere_transcribe.
+	SrcLang        string `json:"src_lang,omitempty"`
+	TgtLang        string `json:"tgt_lang,omitempty"`
+	UsePunctuation bool   `json:"use_punctuation,omitempty"`
+
+	// LLM-decoder options used by funasr_nano and qwen3_asr (MaxTotalLen only
+	// by qwen3_asr; the prompts only by funasr_nano). Zero values keep the
+	// Sherpa defaults.
+	SystemPrompt string  `json:"system_prompt,omitempty"`
+	UserPrompt   string  `json:"user_prompt,omitempty"`
+	MaxTotalLen  int     `json:"max_total_len,omitempty"`
+	MaxNewTokens int     `json:"max_new_tokens,omitempty"`
+	Temperature  float32 `json:"temperature,omitempty"`
+	TopP         float32 `json:"top_p,omitempty"`
+	Seed         int     `json:"seed,omitempty"`
+	Hotwords     string  `json:"hotwords,omitempty"`
 
 	// MaxDecodeSeconds makes one SherpaOfflineModel decode refuse longer input
 	// with an *AudioTooLongError instead of letting the model truncate it.
@@ -459,31 +507,7 @@ func (c *Config) validateOffline() []error {
 		return append(errs, fmt.Errorf("offline model family is required"))
 	}
 
-	switch offline.ModelFamily {
-	case OfflineFamilyTransducer:
-		errs = append(errs, requirePathSet("offline transducer", map[string]string{
-			"tokens":  offline.TokensPath,
-			"encoder": offline.EncoderPath,
-			"decoder": offline.DecoderPath,
-			"joiner":  offline.JoinerPath,
-		})...)
-	case OfflineFamilyParaformer, OfflineFamilyZipformerCTC, OfflineFamilyNemoCTC:
-		errs = append(errs, requirePathSet("offline "+offline.ModelFamily, map[string]string{
-			"tokens": offline.TokensPath,
-			"model":  offline.ModelPath,
-		})...)
-	case OfflineFamilySenseVoice:
-		errs = append(errs, requirePathSet("offline sense voice", map[string]string{
-			"model": offline.ModelPath,
-		})...)
-	case OfflineFamilyWhisper:
-		errs = append(errs, requirePathSet("offline whisper", map[string]string{
-			"encoder": offline.EncoderPath,
-			"decoder": offline.DecoderPath,
-		})...)
-	default:
-		errs = append(errs, fmt.Errorf("unsupported offline model family %q", offline.ModelFamily))
-	}
+	errs = append(errs, validateOfflineFamilyPaths(offline)...)
 	if offline.MaxDecodeSeconds < 0 {
 		errs = append(errs, fmt.Errorf("offline max decode seconds must not be negative, got %g", offline.MaxDecodeSeconds))
 	}
@@ -491,6 +515,97 @@ func (c *Config) validateOffline() []error {
 		errs = append(errs, fmt.Errorf("offline chunking: %w", err))
 	}
 	return errs
+}
+
+// validateOfflineFamilyPaths checks the path set the offline family needs.
+// Sherpa checks tokens for every family except funasr_nano and qwen3_asr (it
+// refuses the config before loading any model), so tokens are required for all
+// others, including sense_voice and whisper.
+func validateOfflineFamilyPaths(offline OfflineConfig) []error {
+	label := "offline " + offline.ModelFamily
+	switch offline.ModelFamily {
+	case OfflineFamilyTransducer:
+		return requirePathSet("offline transducer", map[string]string{
+			"tokens":  offline.TokensPath,
+			"encoder": offline.EncoderPath,
+			"decoder": offline.DecoderPath,
+			"joiner":  offline.JoinerPath,
+		})
+	case OfflineFamilyParaformer, OfflineFamilyZipformerCTC, OfflineFamilyNemoCTC,
+		OfflineFamilyWenetCTC, OfflineFamilyOmnilingualCTC, OfflineFamilyMedASRCTC,
+		OfflineFamilyFireRedASRCTC, OfflineFamilyDolphin, OfflineFamilyTDNN:
+		return requirePathSet(label, map[string]string{
+			"tokens": offline.TokensPath,
+			"model":  offline.ModelPath,
+		})
+	case OfflineFamilySenseVoice:
+		return requirePathSet("offline sense voice", map[string]string{
+			"tokens": offline.TokensPath,
+			"model":  offline.ModelPath,
+		})
+	case OfflineFamilyWhisper, OfflineFamilyCanary, OfflineFamilyCohereTranscribe, OfflineFamilyFireRedASR:
+		return requirePathSet(label, map[string]string{
+			"tokens":  offline.TokensPath,
+			"encoder": offline.EncoderPath,
+			"decoder": offline.DecoderPath,
+		})
+	case OfflineFamilyMoonshine:
+		return validateMoonshinePaths(offline)
+	case OfflineFamilyQwen3ASR:
+		return append(requirePathSet(label, map[string]string{
+			"conv frontend": offline.ConvFrontendPath,
+			"encoder":       offline.EncoderPath,
+			"decoder":       offline.DecoderPath,
+		}), requireDirPath(label, "tokenizer", offline.TokenizerPath)...)
+	case OfflineFamilyFunASRNano:
+		return append(requirePathSet(label, map[string]string{
+			"encoder adaptor": offline.EncoderAdaptorPath,
+			"llm":             offline.LLMPath,
+			"embedding":       offline.EmbeddingPath,
+		}), requireDirPath(label, "tokenizer", offline.TokenizerPath)...)
+	default:
+		return []error{fmt.Errorf("unsupported offline model family %q", offline.ModelFamily)}
+	}
+}
+
+// validateMoonshinePaths accepts either Moonshine layout: v1 (preprocessor,
+// encoder, uncached and cached decoder) or v2 (encoder and merged decoder).
+// Every path that is set must exist, so a stale path next to a complete set is
+// still reported.
+func validateMoonshinePaths(offline OfflineConfig) []error {
+	const label = "offline moonshine"
+	hasV1 := offline.PreprocessorPath != "" && offline.EncoderPath != "" &&
+		offline.UncachedDecoderPath != "" && offline.CachedDecoderPath != ""
+	hasV2 := offline.EncoderPath != "" && offline.MergedDecoderPath != ""
+
+	paths := map[string]string{"tokens": offline.TokensPath}
+	for name, path := range map[string]string{
+		"preprocessor":     offline.PreprocessorPath,
+		"encoder":          offline.EncoderPath,
+		"uncached decoder": offline.UncachedDecoderPath,
+		"cached decoder":   offline.CachedDecoderPath,
+		"merged decoder":   offline.MergedDecoderPath,
+	} {
+		if path != "" {
+			paths[name] = path
+		}
+	}
+	errs := requirePathSet(label, paths)
+	if !hasV1 && !hasV2 {
+		errs = append(errs, fmt.Errorf("%s requires either the v1 paths (preprocessor, encoder, uncached decoder, cached decoder) or the v2 paths (encoder, merged decoder)", label))
+	}
+	return errs
+}
+
+// requireDirPath requires a non-empty path that names an existing directory.
+func requireDirPath(label, name, path string) []error {
+	if path == "" {
+		return []error{fmt.Errorf("%s %s path is required", label, name)}
+	}
+	if err := requireDir(path); err != nil {
+		return []error{fmt.Errorf("%s %s path: %w", label, name, err)}
+	}
+	return nil
 }
 
 func requirePathSet(label string, paths map[string]string) []error {
@@ -505,6 +620,19 @@ func requirePathSet(label string, paths map[string]string) []error {
 		}
 	}
 	return errs
+}
+
+// requireDir is requireFile's counterpart for model assets that Sherpa reads
+// as a directory, such as the funasr_nano and qwen3_asr tokenizers.
+func requireDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is a file, expected directory", path)
+	}
+	return nil
 }
 
 func requireFile(path string) error {
