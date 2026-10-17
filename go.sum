@@ -99,6 +99,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/viktordanov/go-hnswlib v1.4.0 h1:4q3UTWQVsGDHwng/ZIE0pdx8SGGf1UZRHpiO+9Y/LX0=
 github.com/viktordanov/go-hnswlib v1.4.0/go.mod h1:+wDsu8dls17BG9y3Z8lZgs5f8No97/j+tFtV2RJKwY8=
+github.com/viktordanov/go-hnswlib v1.5.0 h1:fDWPERCZR/N1k9sZEdkRfL5mnS0s96Uc8Z2RiZLnJE8=
+github.com/viktordanov/go-hnswlib v1.5.0/go.mod h1:D5Z8+7mBaZlZEgLinJYcQAtkfnmJuns6MAq50et2gYs=
 github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=

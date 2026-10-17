@@ -9,7 +9,7 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/k2-fsa/sherpa-onnx-go v1.13.8
 	github.com/mewkiz/flac v1.0.14
-	github.com/viktordanov/go-hnswlib v1.4.0
+	github.com/viktordanov/go-hnswlib v1.5.0
 )
 
 require (
