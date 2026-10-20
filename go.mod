@@ -1,6 +1,6 @@
 module go.glpx.pro/gdk/voice
 
-go 1.26.4
+go 1.27.0
 
 require (
 	github.com/cockroachdb/pebble v1.1.5

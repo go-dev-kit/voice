@@ -2,7 +2,7 @@ version: 1
 go:
   # go.mod's floor; the main gates run the fleet default (1.27.2), whose
   # standard library carries the fixes 1.26.4 lacks.
-  compatibility_version: "1.26.4"
+  compatibility_version: "1.27.0"
 extra_jobs:
   # The shared gates already run gofmt, mod verify, tidy, vet and race tests;
   # these are the parts of `make verify` they do not cover.

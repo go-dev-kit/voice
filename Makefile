@@ -5,7 +5,7 @@ BENCH_PACKAGES ?= ./audio ./diarization ./speaker ./indexing ./asr ./meeting ./e
 BENCH_COUNT ?= 6
 BENCH_DIR ?= /tmp/voicekit-benchmarks
 PROFILE_DIR ?= /tmp/voicekit-profiles
-GOLANGCI_LINT_VERSION ?= v2.14.0
+GOLANGCI_LINT_VERSION ?= v2.15.0
 GOLANGCI_LINT_VERSION_RAW := $(patsubst v%,%,$(GOLANGCI_LINT_VERSION))
 GO_BIN := $(shell go env GOPATH)/bin
 
