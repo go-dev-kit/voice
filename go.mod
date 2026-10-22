@@ -2,6 +2,8 @@ module go.glpx.pro/gdk/voice
 
 go 1.27.0
 
+toolchain go1.27.3
+
 require (
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/go-audio/wav v1.1.0
