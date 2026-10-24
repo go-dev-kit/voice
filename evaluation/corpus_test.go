@@ -78,6 +78,8 @@ func TestLoadManifestJSONLErrors(t *testing.T) {
 		{"missing reference", `{"id":"a","audio":"a"}`, 1},
 		{"negative duration", `{"id":"a","audio":"a","reference":"r","duration_s":-1}`, 1},
 		{"trailing data", `{"id":"a","audio":"a","reference":"r"} {}`, 1},
+		{"stray closing brace", `{"id":"a","audio":"a","reference":"r"} }`, 1},
+		{"trailing scalar", `{"id":"a","audio":"a","reference":"r"} 5`, 1},
 		{"duplicate", `{"id":"a","audio":"a","reference":"r"}` + "\n" + `{"id":"a","audio":"b","reference":"r"}`, 2},
 	}
 	for _, tt := range tests {
@@ -175,5 +177,31 @@ func TestRTFx(t *testing.T) {
 	}
 	if f, err := RealTimeFactor(0, time.Second); err != nil || f != 0 {
 		t.Fatalf("RealTimeFactor zero processing = %v, %v", f, err)
+	}
+}
+
+func TestLoadManifestJSONLTrailingWhitespace(t *testing.T) {
+	in := `{"id":"a","audio":"a.wav","reference":"r"} 	` + "\r\n"
+	rows, err := LoadManifestJSONL(strings.NewReader(in), "")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %v, err = %v", rows, err)
+	}
+}
+
+func TestCorpusLoadersStripBOM(t *testing.T) {
+	const bom = "\ufeff"
+	rows, err := LoadManifestJSONL(strings.NewReader(bom+`{"id":"a","audio":"a.wav","reference":"r"}`+"\n"), "")
+	if err != nil || len(rows) != 1 || rows[0].ID != "a" {
+		t.Fatalf("manifest rows = %+v, err = %v", rows, err)
+	}
+	fr, err := LoadFLEURSTSV(strings.NewReader(bom+fleursFixture), "/d")
+	if err != nil || len(fr) != 2 || fr[0].ID != "1855" {
+		t.Fatalf("fleurs rows = %+v, err = %v", fr, err)
+	}
+	// Only the first line's BOM is dropped; one mid-file is data and fails.
+	_, err = LoadManifestJSONL(strings.NewReader(`{"id":"a","audio":"a","reference":"r"}`+"\n"+bom+`{"id":"b","audio":"b","reference":"r"}`), "")
+	var ce *CorpusError
+	if !errors.As(err, &ce) || ce.Line != 2 {
+		t.Fatalf("err = %v, want CorpusError at line 2", err)
 	}
 }

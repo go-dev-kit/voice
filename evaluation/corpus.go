@@ -50,7 +50,8 @@ type FLEURSRow struct {
 }
 
 // LoadFLEURSTSV parses a FLEURS split TSV. Audio paths are File joined to
-// audioDir; an absolute File is kept. Blank lines are skipped; any other
+// audioDir; an absolute File is kept. A leading UTF-8 byte order mark is
+// ignored. Blank lines are skipped; any other
 // line that does not have exactly seven tab-separated columns, has an empty
 // id or file, or has a non-integer num_samples fails with a *CorpusError.
 func LoadFLEURSTSV(r io.Reader, audioDir string) ([]FLEURSRow, error) {
@@ -117,7 +118,9 @@ type ManifestRow struct {
 
 // LoadManifestJSONL parses a JSONL manifest with fields id, audio, reference
 // and optional duration_s, language, speaker. Relative audio paths resolve
-// against baseDir. Blank lines are skipped. Invalid JSON, unknown fields,
+// against baseDir. A leading UTF-8 byte order mark is ignored. Each line must
+// be exactly one JSON object followed only by whitespace. Blank lines are
+// skipped. Invalid JSON, unknown fields,
 // trailing data, missing id/audio/reference, a negative or non-finite
 // duration_s and duplicate ids fail with a *CorpusError.
 func LoadManifestJSONL(r io.Reader, baseDir string) ([]ManifestRow, error) {
@@ -130,7 +133,9 @@ func LoadManifestJSONL(r io.Reader, baseDir string) ([]ManifestRow, error) {
 		if err := dec.Decode(&row); err != nil {
 			return err
 		}
-		if dec.More() {
+		// Exactly one object per line: anything but whitespace after it
+		// (including a stray "}" that dec.More would accept) is an error.
+		if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 			return errors.New("unexpected data after JSON object")
 		}
 		switch {
@@ -168,6 +173,12 @@ func LoadManifestJSONLFile(path string) ([]ManifestRow, error) {
 	return LoadManifestJSONL(f, filepath.Dir(path))
 }
 
+// resolveCorpusPath joins a relative p to base. An absolute p, or an empty
+// base, returns p unchanged, and a relative p containing ".." is not
+// rejected, so the result is not confined to base. AudioPath values built
+// from it are not confined either: a consumer must confine them (for example
+// with os.Root or a prefix check) before opening audio named by an untrusted
+// manifest.
 func resolveCorpusPath(base string, p string) string {
 	if filepath.IsAbs(p) || base == "" {
 		return p
@@ -175,10 +186,15 @@ func resolveCorpusPath(base string, p string) string {
 	return filepath.Join(base, p)
 }
 
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
 // scanCorpusLines feeds each non-blank line (without the line terminator) to
-// fn, enforcing MaxCorpusLineBytes and wrapping failures with the line number.
+// fn, skipping a leading UTF-8 BOM, enforcing MaxCorpusLineBytes and wrapping failures with the line number.
 func scanCorpusLines(r io.Reader, fn func(line int, text string) error) error {
 	br := bufio.NewReaderSize(r, 64<<10)
+	if bom, err := br.Peek(len(utf8BOM)); err == nil && bytes.Equal(bom, utf8BOM) {
+		_, _ = br.Discard(len(utf8BOM))
+	}
 	for line := 1; ; line++ {
 		text, err := readBoundedLine(br)
 		if err != nil && !errors.Is(err, io.EOF) {
