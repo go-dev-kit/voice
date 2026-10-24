@@ -94,13 +94,18 @@ type Manifest struct {
 }
 
 // ParseManifest decodes and validates a JSON manifest. Unknown fields are
-// rejected so typos do not silently disable a digest.
+// rejected so typos do not silently disable a digest, and so is anything
+// after the first JSON document: a silently ignored second document would
+// look like a successful parse while a different manifest was intended.
 func ParseManifest(r io.Reader) (*Manifest, error) {
 	dec := json.NewDecoder(r)
 	dec.DisallowUnknownFields()
 	var m Manifest
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidManifest, err)
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: unexpected data after the manifest object", ErrInvalidManifest)
 	}
 	if err := m.Validate(); err != nil {
 		return nil, err

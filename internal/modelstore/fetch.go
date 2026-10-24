@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -26,8 +27,8 @@ const (
 	defaultMaxFiles    = 10000
 	// tempPrefix starts every temporary entry Fetch creates in dir. Fetch
 	// names them uniquely and removes them itself; after a crash a leftover
-	// is harmless and never blocks a later Fetch. Removing stale ones is the
-	// caller's job, and is safe only while no Fetch into dir is running.
+	// is harmless and never blocks a later Fetch. [Sweep] removes stale ones,
+	// safely only while no Fetch into dir is running in any process.
 	tempPrefix = ".modelstore-"
 )
 
@@ -71,10 +72,27 @@ func WithMaxFiles(n int) Option { return func(c *fetchConfig) { c.maxFiles = n }
 // dir and its SHA-256 is verified before the content is used. Archives are
 // extracted into a temporary directory in dir, checked against the entry's
 // expected files, and renamed into place, so a failed or canceled fetch
-// leaves no partial model behind. A client of nil means http.DefaultClient.
+// leaves no partial model behind.
+//
+// A client of nil means [defaultHTTPClient]: the same transport policy as
+// [http.DefaultClient] (which it shares) plus an overall response-header
+// timeout, a global redirect cap, and a refusal to follow a redirect to a
+// non-https URL. Even so, model bytes are trusted only through the pinned
+// digest, never through the transport.
 //
 // The result is Entry.Target(dir). An existing target is replaced. Symlinks in
 // an archive are kept only when they resolve inside the final model directory.
+//
+// Install atomicity: the single-file install re-digests the installed bytes
+// after the rename and retries on mismatch, so a writer that swaps the
+// temporary file's name between digest check and install cannot plant
+// unverified bytes — the fetch fails with a DigestError instead. An archive
+// install renames a verified staging directory by path; the same re-check is
+// not affordable there (it would mean re-extracting), so a writer holding
+// dir could in principle swap that path between verification and rename,
+// which the in-process lock and cross-process retry make unlikely but cannot
+// rule out. Fetching into a directory other writers create files in is not
+// supported.
 func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, opts ...Option) (Result, error) {
 	cfg := fetchConfig{maxDownload: defaultMaxDownload, maxExtract: defaultMaxExtract, maxFiles: defaultMaxFiles}
 	for _, o := range opts {
@@ -88,10 +106,17 @@ func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, op
 		return Result{}, fmt.Errorf("%w: %s", ErrUnpinned, entry.Name)
 	}
 	if client == nil {
-		client = http.DefaultClient
+		client = defaultHTTPClient()
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return Result{}, err
+	}
+	// MkdirAll does not tighten a directory that already exists with looser
+	// permissions; enforce the mode the store contract promises.
+	if fi, err := os.Stat(dir); err == nil && fi.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o750); err != nil {
+			return Result{}, err
+		}
 	}
 
 	tmp, err := os.CreateTemp(dir, tempPrefix+"dl-*")
@@ -99,9 +124,11 @@ func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, op
 		return Result{}, err
 	}
 	defer os.Remove(tmp.Name()) // no-op once renamed
-	// The handle stays open until the content has been used: every later
-	// read goes through it, never through the name, so the verified bytes
-	// are the bytes that get extracted or installed.
+	// The handle stays open until the content has been used: extraction and
+	// every digest re-check read through it, never through the name. The
+	// single-file install renames this handle, so its installed bytes are
+	// exactly the bytes hashed here; an archive install renames a staging
+	// directory by path (see the Fetch doc for the residual caveat).
 	defer tmp.Close()
 	got, err := download(ctx, client, entry.URL, tmp, cfg.maxDownload)
 	if err != nil {
@@ -122,7 +149,7 @@ func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, op
 		if err := tmp.Close(); err != nil {
 			return Result{}, err
 		}
-		return res, replace(dir, tmp.Name(), res.Path)
+		return res, installVerified(dir, tmp.Name(), res.Path, res.SHA256)
 	}
 
 	stage, err := os.MkdirTemp(dir, tempPrefix+"x-*")
@@ -218,18 +245,15 @@ func verifyStaged(e *Entry, root string) error {
 	return nil
 }
 
-// replaceMu serializes installs within a process; replace retries to cover
+// replaceMu serializes installs within a process; the retry loops cover
 // other processes.
 var replaceMu sync.Mutex
 
+// installDigest digests an installed file for installVerified's re-check.
+var installDigest = DigestFile
+
 // replace moves src to dst, displacing an existing dst. dst must be strictly
-// inside dir. The final rename is atomic; replacing an existing target is two
-// renames and can briefly leave no dst. The displaced target is parked in a
-// uniquely named ".modelstore-old-*" directory, so leftovers from a crash
-// never block a later Fetch. Deleting the parked copy after a successful swap
-// is best-effort: the model is installed either way. Concurrent Fetches of the
-// same target race benignly (one install wins); replace retries when another
-// one changes dst underneath it.
+// inside dir. See replaceLocked for the mechanics.
 func replace(dir, src, dst string) error {
 	rel, err := filepath.Rel(dir, dst)
 	if err != nil || rel == "." || !filepath.IsLocal(rel) {
@@ -237,6 +261,18 @@ func replace(dir, src, dst string) error {
 	}
 	replaceMu.Lock()
 	defer replaceMu.Unlock()
+	return replaceLocked(dir, src, dst)
+}
+
+// replaceLocked is replace's rename loop with the store lock already held.
+// The final rename is atomic; replacing an existing target is two renames and
+// can briefly leave no dst. The displaced target is parked in a uniquely
+// named ".modelstore-old-*" directory, so leftovers from a crash never block
+// a later Fetch. Deleting the parked copy after a successful swap is
+// best-effort: the model is installed either way. Concurrent Fetches of the
+// same target race benignly (one install wins); the loop retries when
+// another goroutine or process changes dst underneath it.
+func replaceLocked(dir, src, dst string) error {
 	var last error
 	for range 8 {
 		if _, err := os.Lstat(dst); errors.Is(err, fs.ErrNotExist) {
@@ -273,6 +309,79 @@ func replace(dir, src, dst string) error {
 		return nil
 	}
 	return last
+}
+
+// installVerified installs a downloaded single file and then re-digests the
+// installed bytes. The re-check closes the gap a path rename cannot close:
+// a rename installs whatever its source name points at when it fires, not
+// necessarily the inode whose bytes were hashed. A mismatch means the file
+// was swapped under us; because the temporary source is gone after the
+// rename there is nothing to retry, so the fetch fails loudly with a
+// DigestError instead of leaving unverified bytes installed.
+func installVerified(dir, src, dst, want string) error {
+	rel, err := filepath.Rel(dir, dst)
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return fmt.Errorf("modelstore: refusing to replace %q: not inside %q", dst, dir)
+	}
+	replaceMu.Lock()
+	defer replaceMu.Unlock()
+	if err := replaceLocked(dir, src, dst); err != nil {
+		return err
+	}
+	got, err := installDigest(dst)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return &DigestError{What: dst, Want: want, Got: got}
+	}
+	return nil
+}
+
+// defaultHTTPClient is the client used when Fetch's client argument is nil:
+// the http.DefaultTransport policies plus the timeouts and redirect bounds a
+// download of untrusted bytes needs to terminate on its own. It shares
+// http.DefaultClient's transport, so proxy and TLS environment settings keep
+// applying; only the client-level timeout and redirect policy are added.
+func defaultHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: http.DefaultTransport,
+		// Overall budget including body read; Fetch cancels earlier through
+		// the context, this is the backstop for a stalled server.
+		Timeout: 30 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("%w: more than %d redirects", ErrTooLarge, len(via))
+			}
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("modelstore: redirect to %s: https required", req.URL)
+			}
+			return nil
+		},
+	}
+}
+
+// Sweep removes temporary entries a crashed Fetch left in dir: download
+// files, staging directories, and parked old targets carrying tempPrefix.
+// Sweep takes the same lock as an install, but a Fetch running concurrently
+// in another process is invisible to it, so call Sweep only while no Fetch
+// into dir is running anywhere. Crash leftovers are harmless to Fetch —
+// Sweep exists to reclaim the disk space of a store that crashes often.
+func Sweep(dir string) error {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, e := range ents {
+		if !strings.HasPrefix(e.Name(), tempPrefix) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func download(ctx context.Context, client *http.Client, url string, w io.Writer, limit int64) (string, error) {
