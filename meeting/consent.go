@@ -113,10 +113,10 @@ type Retention struct {
 // seconds under "retain_for_seconds" so the wire format does not leak Go's
 // nanosecond Duration representation.
 type retentionWire struct {
-	Policy           string      `json:"policy,omitempty"`
-	RetainUntil      time.Time   `json:"retain_until,omitzero"`
-	RetainForSeconds json.Number `json:"retain_for_seconds,omitempty"`
-	LegalHold        bool        `json:"legal_hold,omitempty"`
+	Policy           string          `json:"policy,omitempty"`
+	RetainUntil      time.Time       `json:"retain_until,omitzero"`
+	RetainForSeconds json.RawMessage `json:"retain_for_seconds,omitempty"`
+	LegalHold        bool            `json:"legal_hold,omitempty"`
 }
 
 // MarshalJSON encodes RetainFor as integer seconds. It rejects a negative or
@@ -130,7 +130,7 @@ func (r Retention) MarshalJSON() ([]byte, error) {
 	}
 	wire := retentionWire{Policy: r.Policy, RetainUntil: r.RetainUntil, LegalHold: r.LegalHold}
 	if r.RetainFor > 0 {
-		wire.RetainForSeconds = json.Number(strconv.FormatInt(int64(r.RetainFor/time.Second), 10))
+		wire.RetainForSeconds = json.RawMessage(strconv.FormatInt(int64(r.RetainFor/time.Second), 10))
 	}
 	return json.Marshal(wire)
 }
@@ -143,10 +143,10 @@ func (r *Retention) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var retainFor time.Duration
-	if wire.RetainForSeconds != "" {
-		seconds, err := strconv.ParseInt(wire.RetainForSeconds.String(), 10, 64)
+	if raw := string(wire.RetainForSeconds); raw != "" && raw != "null" {
+		seconds, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
-			return fmt.Errorf("%w: retain_for_seconds %q is not an integer number of seconds", ErrInvalidRetention, wire.RetainForSeconds)
+			return fmt.Errorf("%w: retain_for_seconds %q is not an integer number of seconds", ErrInvalidRetention, raw)
 		}
 		if seconds < 0 {
 			return fmt.Errorf("%w: retain_for_seconds is negative", ErrInvalidRetention)

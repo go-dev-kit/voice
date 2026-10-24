@@ -294,6 +294,8 @@ func TestRetentionJSONRejectsInvalidValues(t *testing.T) {
 		"overflow":   `{"retain_for_seconds":9223372037}`,
 		"huge":       `{"retain_for_seconds":99999999999999999999}`,
 		"string":     `{"retain_for_seconds":"abc"}`,
+		"quoted":     `{"retain_for_seconds":"5"}`,
+		"bool":       `{"retain_for_seconds":true}`,
 	} {
 		var r Retention
 		if err := json.Unmarshal([]byte(input), &r); err == nil {
