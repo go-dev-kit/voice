@@ -144,6 +144,20 @@ func (m Meeting) Redact(redactor Redactor) (Meeting, RedactionReport, error) {
 		}
 	}
 
+	if m.Consent != nil {
+		m.Consent.Basis, report, err = redactField(redactor, report, "meeting.consent.basis", m.Consent.Basis)
+		if err != nil {
+			return Meeting{}, RedactionReport{}, err
+		}
+		for index := range m.Consent.Participants {
+			field := "meeting.consent.participants[" + intString(index) + "].basis"
+			m.Consent.Participants[index].Basis, report, err = redactField(redactor, report, field, m.Consent.Participants[index].Basis)
+			if err != nil {
+				return Meeting{}, RedactionReport{}, err
+			}
+		}
+	}
+
 	m.Summary, report, err = redactSummary(redactor, report, m.Summary)
 	if err != nil {
 		return Meeting{}, RedactionReport{}, err
@@ -354,7 +368,26 @@ func cloneMeeting(m Meeting) Meeting {
 	m.Participants = append([]Participant(nil), m.Participants...)
 	m.Transcript = cloneTranscriptTurns(m.Transcript)
 	m.Summary = cloneMeetingSummary(m.Summary)
+	m.Consent = cloneConsent(m.Consent)
+	m.Retention = cloneRetention(m.Retention)
 	return m
+}
+
+func cloneConsent(c *Consent) *Consent {
+	if c == nil {
+		return nil
+	}
+	cloned := *c
+	cloned.Participants = append([]ParticipantConsent(nil), c.Participants...)
+	return &cloned
+}
+
+func cloneRetention(r *Retention) *Retention {
+	if r == nil {
+		return nil
+	}
+	cloned := *r
+	return &cloned
 }
 
 func cloneTranscriptTurns(turns []TranscriptTurn) []TranscriptTurn {

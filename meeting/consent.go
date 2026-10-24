@@ -1,8 +1,11 @@
 package meeting
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -102,8 +105,59 @@ func (c Consent) Obtained(participants []Participant) bool {
 type Retention struct {
 	Policy      string        `json:"policy,omitempty"`
 	RetainUntil time.Time     `json:"retain_until,omitzero"`
-	RetainFor   time.Duration `json:"retain_for,omitempty"`
+	RetainFor   time.Duration `json:"-"`
 	LegalHold   bool          `json:"legal_hold,omitempty"`
+}
+
+// retentionWire is the JSON shape of Retention. RetainFor travels as whole
+// seconds under "retain_for_seconds" so the wire format does not leak Go's
+// nanosecond Duration representation.
+type retentionWire struct {
+	Policy           string      `json:"policy,omitempty"`
+	RetainUntil      time.Time   `json:"retain_until,omitzero"`
+	RetainForSeconds json.Number `json:"retain_for_seconds,omitempty"`
+	LegalHold        bool        `json:"legal_hold,omitempty"`
+}
+
+// MarshalJSON encodes RetainFor as integer seconds. It rejects a negative or
+// sub-second-precision duration instead of silently truncating it.
+func (r Retention) MarshalJSON() ([]byte, error) {
+	if r.RetainFor < 0 {
+		return nil, fmt.Errorf("%w: retain_for is negative", ErrInvalidRetention)
+	}
+	if r.RetainFor%time.Second != 0 {
+		return nil, fmt.Errorf("%w: retain_for %s is not a whole number of seconds", ErrInvalidRetention, r.RetainFor)
+	}
+	wire := retentionWire{Policy: r.Policy, RetainUntil: r.RetainUntil, LegalHold: r.LegalHold}
+	if r.RetainFor > 0 {
+		wire.RetainForSeconds = json.Number(strconv.FormatInt(int64(r.RetainFor/time.Second), 10))
+	}
+	return json.Marshal(wire)
+}
+
+// UnmarshalJSON decodes retain_for_seconds as a non-negative integer number of
+// seconds and rejects fractional, negative, or overflowing values.
+func (r *Retention) UnmarshalJSON(data []byte) error {
+	var wire retentionWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	var retainFor time.Duration
+	if wire.RetainForSeconds != "" {
+		seconds, err := strconv.ParseInt(wire.RetainForSeconds.String(), 10, 64)
+		if err != nil {
+			return fmt.Errorf("%w: retain_for_seconds %q is not an integer number of seconds", ErrInvalidRetention, wire.RetainForSeconds)
+		}
+		if seconds < 0 {
+			return fmt.Errorf("%w: retain_for_seconds is negative", ErrInvalidRetention)
+		}
+		if seconds > int64(math.MaxInt64/time.Second) {
+			return fmt.Errorf("%w: retain_for_seconds %d overflows a duration", ErrInvalidRetention, seconds)
+		}
+		retainFor = time.Duration(seconds) * time.Second
+	}
+	*r = Retention{Policy: wire.Policy, RetainUntil: wire.RetainUntil, RetainFor: retainFor, LegalHold: wire.LegalHold}
+	return nil
 }
 
 // Validate checks retention consistency.

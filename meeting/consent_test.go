@@ -225,3 +225,89 @@ func consentedMeeting() Meeting {
 	}
 	return m
 }
+
+func TestRetentionJSONUsesIntegerSeconds(t *testing.T) {
+	r := Retention{Policy: "std", RetainFor: 90 * time.Minute, LegalHold: true}
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(data) != `{"policy":"std","retain_for_seconds":5400,"legal_hold":true}` {
+		t.Fatalf("unexpected retention JSON %s", data)
+	}
+	var back Retention
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if back != r {
+		t.Fatalf("round trip mismatch: %+v != %+v", back, r)
+	}
+
+	until := time.Date(2027, 1, 2, 3, 4, 5, 0, time.UTC)
+	data, err = json.Marshal(&Retention{RetainUntil: until})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "retain_for") {
+		t.Fatalf("zero RetainFor must be omitted: %s", data)
+	}
+	back = Retention{}
+	if err := json.Unmarshal(data, &back); err != nil || !back.RetainUntil.Equal(until) || back.RetainFor != 0 {
+		t.Fatalf("retain_until round trip: %+v err=%v", back, err)
+	}
+}
+
+func TestRetentionJSONRoundTripsThroughMeetingAndExport(t *testing.T) {
+	m := consentedMeeting()
+	m.Retention = &Retention{Policy: "standard", RetainFor: 36 * time.Hour}
+
+	aggregate, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	exported, err := m.ExportJSON()
+	if err != nil {
+		t.Fatalf("ExportJSON: %v", err)
+	}
+	for name, data := range map[string][]byte{"aggregate": aggregate, "export": exported} {
+		if !strings.Contains(string(data), `"retain_for_seconds": 129600`) && !strings.Contains(string(data), `"retain_for_seconds":129600`) {
+			t.Fatalf("%s JSON lacks retain_for_seconds: %s", name, data)
+		}
+		if strings.Contains(string(data), `"retain_for"`) {
+			t.Fatalf("%s JSON still has nanosecond retain_for: %s", name, data)
+		}
+		var back Meeting
+		if err := json.Unmarshal(data, &back); err != nil {
+			t.Fatalf("%s Unmarshal: %v", name, err)
+		}
+		if back.Retention == nil || back.Retention.RetainFor != 36*time.Hour {
+			t.Fatalf("%s retention did not round trip: %+v", name, back.Retention)
+		}
+	}
+}
+
+func TestRetentionJSONRejectsInvalidValues(t *testing.T) {
+	for name, input := range map[string]string{
+		"negative":   `{"retain_for_seconds":-1}`,
+		"fractional": `{"retain_for_seconds":1.5}`,
+		"exponent":   `{"retain_for_seconds":1e3}`,
+		"overflow":   `{"retain_for_seconds":9223372037}`,
+		"huge":       `{"retain_for_seconds":99999999999999999999}`,
+		"string":     `{"retain_for_seconds":"abc"}`,
+	} {
+		var r Retention
+		if err := json.Unmarshal([]byte(input), &r); err == nil {
+			t.Errorf("%s: expected error, got %+v", name, r)
+		}
+	}
+	var ok Retention
+	if err := json.Unmarshal([]byte(`{"retain_for_seconds":9223372036}`), &ok); err != nil || ok.RetainFor != 9223372036*time.Second {
+		t.Fatalf("max valid seconds: %+v err=%v", ok, err)
+	}
+	if _, err := json.Marshal(Retention{RetainFor: -time.Second}); !errors.Is(err, ErrInvalidRetention) {
+		t.Fatalf("negative marshal: %v", err)
+	}
+	if _, err := json.Marshal(Retention{RetainFor: 1500 * time.Millisecond}); !errors.Is(err, ErrInvalidRetention) {
+		t.Fatalf("fractional marshal: %v", err)
+	}
+}

@@ -258,6 +258,20 @@ then `CreatedAt`. It reports `false` when no deadline can be computed or a legal
 hold applies. `Meeting.IsDeletionDue(now)` is true when `now` is at or after the
 deadline. The package computes the deadline only; it never deletes anything.
 
+`RetainFor` stays a `time.Duration` in Go but is serialized as integer seconds
+under the JSON key `retain_for_seconds` (omitted when zero), in both the
+`Meeting` JSON and the product export JSON. `Retention` implements
+`MarshalJSON`/`UnmarshalJSON`: decoding rejects negative, fractional
+(`1.5`, `1e3`), non-numeric, and duration-overflowing values with
+`ErrInvalidRetention`, and encoding rejects a negative or sub-second
+`RetainFor` instead of truncating it. There is no `retain_for` (nanosecond) key.
+
+`Meeting.Redact` deep-copies `Consent` and `Retention`, so the redacted meeting
+shares no pointers or participant slices with the original. `Consent.Basis` and
+each `ParticipantConsent.Basis` are free text and are passed through the
+redactor as `meeting.consent.basis` and `meeting.consent.participants[i].basis`,
+with matches reported in the `RedactionReport`.
+
 ## Export Safety
 
 The original export methods remain backward compatible:

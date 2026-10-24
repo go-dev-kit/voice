@@ -184,3 +184,65 @@ func assertNoSensitiveText(t *testing.T, text string) {
 		}
 	}
 }
+
+func consentBasisMeeting() Meeting {
+	m := consentedMeeting()
+	m.Consent.Basis = "verbal, confirmed by ada@example.com"
+	m.Consent.Participants[0].Basis = "call +1 415 555 0100 to verify"
+	m.Retention = &Retention{Policy: "std", RetainFor: time.Hour}
+	return m
+}
+
+func TestMeetingRedactDoesNotShareConsentOrRetention(t *testing.T) {
+	original := consentBasisMeeting()
+	redacted, _, err := original.Redact(NewPatternRedactor(DefaultRedactionPolicy()))
+	if err != nil {
+		t.Fatalf("Redact: %v", err)
+	}
+	if redacted.Consent == original.Consent || redacted.Retention == original.Retention {
+		t.Fatal("Redact result shares Consent or Retention pointers with the original")
+	}
+	redacted.Consent.Status = ConsentWithdrawn
+	redacted.Consent.Participants[1].Status = ConsentDeclined
+	redacted.Retention.LegalHold = true
+	redacted.Retention.RetainFor = 0
+	if original.Consent.Status != ConsentObtained || original.Consent.Participants[1].Status != ConsentObtained {
+		t.Fatalf("mutating redacted consent changed the original: %+v", original.Consent)
+	}
+	if original.Consent.Basis != "verbal, confirmed by ada@example.com" || original.Consent.Participants[0].Basis != "call +1 415 555 0100 to verify" {
+		t.Fatalf("redaction altered the original basis: %+v", original.Consent)
+	}
+	if original.Retention.LegalHold || original.Retention.RetainFor != time.Hour {
+		t.Fatalf("mutating redacted retention changed the original: %+v", original.Retention)
+	}
+}
+
+func TestMeetingRedactRedactsConsentBasis(t *testing.T) {
+	redacted, report, err := consentBasisMeeting().Redact(NewPatternRedactor(DefaultRedactionPolicy()))
+	if err != nil {
+		t.Fatalf("Redact: %v", err)
+	}
+	if strings.Contains(redacted.Consent.Basis, "ada@example.com") || !strings.Contains(redacted.Consent.Basis, "[REDACTED]") {
+		t.Fatalf("meeting consent basis not redacted: %q", redacted.Consent.Basis)
+	}
+	if strings.Contains(redacted.Consent.Participants[0].Basis, "555") {
+		t.Fatalf("participant consent basis not redacted: %q", redacted.Consent.Participants[0].Basis)
+	}
+	fields := map[string]bool{}
+	for _, match := range report.Matches {
+		fields[match.Field] = true
+	}
+	for _, want := range []string{"meeting.consent.basis", "meeting.consent.participants[0].basis"} {
+		if !fields[want] {
+			t.Fatalf("report lacks field %q: %+v", want, report.Matches)
+		}
+	}
+
+	data, err := redacted.ExportJSONWithOptions(ExportOptions{RequireRedaction: true})
+	if err != nil {
+		t.Fatalf("ExportJSONWithOptions: %v", err)
+	}
+	if strings.Contains(string(data), "ada@example.com") || strings.Contains(string(data), "555 0100") {
+		t.Fatalf("redacted export leaks consent basis: %s", data)
+	}
+}
