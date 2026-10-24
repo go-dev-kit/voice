@@ -86,7 +86,7 @@ func NewSherpaOfflineModel(config *Config) (*SherpaOfflineModel, error) {
 
 	return &SherpaOfflineModel{
 		name:         config.DefaultModel,
-		language:     config.Offline.Language,
+		language:     offlineFallbackLanguage(config.Offline),
 		quantization: config.Quantization,
 		recognizer:   &nativeOfflineRecognizer{recognizer: recognizer},
 		maxDecode:    secondsToDuration(config.Offline.maxDecodeSeconds()),
@@ -214,7 +214,7 @@ func buildOfflineRecognizerConfig(config *Config) (*sherpa.OfflineRecognizerConf
 		modelConfig.Whisper = sherpa.OfflineWhisperModelConfig{
 			Encoder:                 offline.EncoderPath,
 			Decoder:                 offline.DecoderPath,
-			Language:                offline.Language,
+			Language:                whisperLanguageCode(offline.Language),
 			Task:                    offline.Task,
 			TailPaddings:            offline.TailPaddings,
 			EnableTokenTimestamps:   boolToInt(offline.EnableTokenTimestamps),
@@ -515,4 +515,13 @@ func (s *nativeOfflineStream) Close() error {
 	sherpa.DeleteOfflineStream(s.stream)
 	s.stream = nil
 	return nil
+}
+
+// offlineFallbackLanguage is the result language used when the recognizer
+// reports none. Whisper auto-detects, so it has no configured fallback.
+func offlineFallbackLanguage(offline OfflineConfig) string {
+	if offline.ModelFamily == OfflineFamilyWhisper {
+		return whisperLanguageCode(offline.Language)
+	}
+	return offline.Language
 }

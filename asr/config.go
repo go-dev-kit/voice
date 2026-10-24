@@ -362,7 +362,9 @@ func (c *Config) applyOfflineDefaults(defaults Config) {
 	if c.Offline.ModelFamily == "" {
 		c.Offline.ModelFamily = defaults.Offline.ModelFamily
 	}
-	if c.Offline.Language == "" {
+	// Whisper treats an empty language as auto-detect, so the top-level
+	// Language must not fill it in.
+	if c.Offline.Language == "" && c.Offline.ModelFamily != OfflineFamilyWhisper {
 		c.Offline.Language = c.Language
 	}
 	if c.Offline.Task == "" {
@@ -530,6 +532,9 @@ func (c *Config) validateOffline() []error {
 	}
 
 	errs = append(errs, validateOfflineFamilyPaths(offline)...)
+	if offline.ModelFamily == OfflineFamilyWhisper {
+		errs = append(errs, validateWhisperOptions(offline)...)
+	}
 	if offline.MaxConcurrentDecodes < 0 {
 		errs = append(errs, fmt.Errorf("offline max concurrent decodes must not be negative, got %d", offline.MaxConcurrentDecodes))
 	}
