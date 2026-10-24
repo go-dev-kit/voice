@@ -15,6 +15,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
+	"strings"
 )
 
 const (
@@ -285,7 +287,7 @@ func extract(ctx context.Context, archive string, kind ArchiveKind, dst string, 
 			}
 			written += hdr.Size
 		case tar.TypeSymlink:
-			if err := checkLink(name, hdr.Linkname); err != nil {
+			if err := checkLink(root, name, hdr.Linkname); err != nil {
 				return err
 			}
 			if err := mkParent(root, name); err != nil {
@@ -317,14 +319,39 @@ func safeName(name string) (string, error) {
 }
 
 // checkLink rejects symlinks whose target is absolute or resolves outside the
-// extraction root. os.Root additionally blocks writes through such links.
-func checkLink(name, target string) error {
+// extraction root. The target is resolved lexically, which is only sound when
+// no component of the link's parent path or of the target itself is a symlink,
+// so both cases are refused: a symlink in the parent path (a -> . then
+// a/b -> ../x) would make the link physically live elsewhere, and a ".." that
+// follows a normal target component could step out through a symlink.
+// os.Root additionally blocks writes through such links.
+func checkLink(root *os.Root, name, target string) error {
 	if target == "" || path.IsAbs(target) || filepath.IsAbs(target) {
 		return fmt.Errorf("%w: %q: symlink target %q is absolute or empty", ErrUnsafeArchive, name, target)
+	}
+	parts := strings.Split(filepath.ToSlash(target), "/")
+	for len(parts) > 0 && (parts[0] == ".." || parts[0] == ".") {
+		parts = parts[1:]
+	}
+	if slices.Contains(parts, "..") {
+		return fmt.Errorf("%w: %q: symlink target %q has \"..\" after a path element", ErrUnsafeArchive, name, target)
 	}
 	resolved := path.Join(path.Dir(filepath.ToSlash(name)), target)
 	if !filepath.IsLocal(filepath.FromSlash(resolved)) {
 		return fmt.Errorf("%w: %q: symlink target %q escapes the target directory", ErrUnsafeArchive, name, target)
+	}
+	// Lstat every ancestor of the link; a missing one is created by mkParent
+	// as a real directory.
+	dir := filepath.Dir(name)
+	for dir != "." {
+		fi, err := root.Lstat(dir)
+		if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: %q: symlink inside symlinked directory %q", ErrUnsafeArchive, name, dir)
+		}
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		dir = filepath.Dir(dir)
 	}
 	return nil
 }

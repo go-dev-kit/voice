@@ -230,6 +230,14 @@ func TestFetchUnsafeArchive(t *testing.T) {
 		"symlink absolute": {{name: "l", typ: tar.TypeSymlink, link: "/etc/passwd"}},
 		"symlink escape":   {{name: "d/l", typ: tar.TypeSymlink, link: "../../x"}},
 		"hardlink":         {{name: "h", typ: tar.TypeLink, link: "a"}},
+		"symlink in symlinked parent": {
+			{name: "a", typ: tar.TypeSymlink, link: "."},
+			{name: "a/b", typ: tar.TypeSymlink, link: "../x"},
+		},
+		"symlink dotdot after element": {
+			{name: "a", typ: tar.TypeSymlink, link: "."},
+			{name: "l", typ: tar.TypeSymlink, link: "a/../x"},
+		},
 		"write via link": {
 			{name: "l", typ: tar.TypeSymlink, link: "sub"},
 			{name: "l/f", body: "x"},
