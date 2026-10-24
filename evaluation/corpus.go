@@ -90,7 +90,7 @@ func LoadFLEURSTSV(r io.Reader, audioDir string) ([]FLEURSRow, error) {
 // directory next to the file when one exists (the layout FLEURS dumps use),
 // otherwise next to the file.
 func LoadFLEURSTSVFile(path string) ([]FLEURSRow, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- the path is the caller's explicit input
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +165,7 @@ func LoadManifestJSONL(r io.Reader, baseDir string) ([]ManifestRow, error) {
 // LoadManifestJSONLFile reads a JSONL manifest, resolving relative audio
 // paths against the manifest's directory.
 func LoadManifestJSONLFile(path string) ([]ManifestRow, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- the path is the caller's explicit input
 	if err != nil {
 		return nil, err
 	}

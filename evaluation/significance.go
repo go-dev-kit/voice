@@ -169,7 +169,9 @@ func PairedBootstrap(a []UtteranceScore, b []UtteranceScore, opts BootstrapOptio
 
 	// A resample whose drawn units hold no reference words has an undefined
 	// WER and is skipped; it can only happen when many utterances are empty.
-	rng := rand.New(rand.NewPCG(opts.Seed, opts.Seed^0x9e3779b97f4a7c15))
+	// A seeded PRNG is the point: results must be reproducible. It is not used
+	// for anything security relevant.
+	rng := rand.New(rand.NewPCG(opts.Seed, opts.Seed^0x9e3779b97f4a7c15)) // #nosec G404
 	diffs := make([]float64, 0, opts.Resamples)
 	for r := 0; r < opts.Resamples; r++ {
 		var da, db, words int

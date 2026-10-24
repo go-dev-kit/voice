@@ -110,7 +110,7 @@ func ParseManifest(r io.Reader) (*Manifest, error) {
 
 // LoadManifest reads and validates the manifest file at path.
 func LoadManifest(path string) (*Manifest, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- the path is the caller's explicit input
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +300,7 @@ func VerifyFile(path, want string) error {
 	if !validDigest(want) {
 		return fmt.Errorf("modelstore: invalid sha256 %q", want)
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- the path is the caller's explicit input
 	if err != nil {
 		return err
 	}
@@ -318,7 +318,7 @@ func VerifyFile(path, want string) error {
 // DigestFile returns the lowercase hex SHA-256 of the file at path, for
 // pinning an entry.
 func DigestFile(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- the path is the caller's explicit input
 	if err != nil {
 		return "", err
 	}

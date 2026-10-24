@@ -90,7 +90,7 @@ func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, op
 	if client == nil {
 		client = http.DefaultClient
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return Result{}, err
 	}
 
@@ -151,7 +151,9 @@ func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, op
 	if err := verifyStaged(&entry, src); err != nil {
 		return Result{}, err
 	}
-	if err := os.Chmod(src, 0o755); err != nil {
+	// Model files are not secret and must be readable by the service account;
+	// directories need the search bit.
+	if err := os.Chmod(src, 0o755); err != nil { // #nosec G302
 		return Result{}, err
 	}
 	return res, replace(dir, src, res.Path)
