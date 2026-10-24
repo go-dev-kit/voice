@@ -14,6 +14,9 @@ var ErrRedactionRequired = errors.New("meeting export requires redaction")
 // ExportOptions configures meeting artifact export behavior.
 type ExportOptions struct {
 	RequireRedaction bool
+	// RequireConsent refuses export unless consent is obtained for the meeting
+	// and, when per-participant records exist, for every participant.
+	RequireConsent bool
 }
 
 // ExportJSON returns a stable product-facing JSON representation.
@@ -141,6 +144,9 @@ func (t TranscriptTurn) DisplayLabel() string {
 func (m Meeting) validateExportOptions(options ExportOptions) error {
 	if options.RequireRedaction && !m.Redacted {
 		return ErrRedactionRequired
+	}
+	if options.RequireConsent && (m.Consent == nil || !m.Consent.Obtained(m.Participants)) {
+		return ErrConsentRequired
 	}
 	return nil
 }
@@ -418,6 +424,8 @@ type exportMeeting struct {
 	Transcript   []exportTurn       `json:"transcript,omitempty"`
 	Summary      *exportSummary     `json:"summary,omitempty"`
 	Redacted     bool               `json:"redacted,omitempty"`
+	Consent      *Consent           `json:"consent,omitempty"`
+	Retention    *Retention         `json:"retention,omitempty"`
 	StartedAt    time.Time          `json:"started_at,omitempty"`
 	EndedAt      time.Time          `json:"ended_at,omitempty"`
 	CreatedAt    time.Time          `json:"created_at"`
@@ -496,6 +504,8 @@ func exportMeetingFromMeeting(m Meeting) exportMeeting {
 		Transcript:   transcript,
 		Summary:      exportSummaryFromSummary(m.Summary),
 		Redacted:     m.Redacted,
+		Consent:      m.Consent,
+		Retention:    m.Retention,
 		StartedAt:    m.StartedAt,
 		EndedAt:      m.EndedAt,
 		CreatedAt:    m.CreatedAt,

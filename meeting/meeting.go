@@ -51,6 +51,8 @@ type Meeting struct {
 	Transcript   []TranscriptTurn `json:"transcript,omitempty"`
 	Summary      MeetingSummary   `json:"summary,omitempty"`
 	Redacted     bool             `json:"redacted,omitempty"`
+	Consent      *Consent         `json:"consent,omitempty"`
+	Retention    *Retention       `json:"retention,omitempty"`
 	StartedAt    time.Time        `json:"started_at,omitempty"`
 	EndedAt      time.Time        `json:"ended_at,omitempty"`
 	CreatedAt    time.Time        `json:"created_at"`
@@ -160,6 +162,9 @@ func (m Meeting) Validate() error {
 		return fmt.Errorf("%w: ended_at before started_at", ErrInvalidTiming)
 	}
 	if err := validateParticipants(m.Participants); err != nil {
+		return err
+	}
+	if err := m.validateConsentRetention(); err != nil {
 		return err
 	}
 	for index, turn := range m.Transcript {
