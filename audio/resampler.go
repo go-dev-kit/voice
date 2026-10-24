@@ -76,7 +76,13 @@ func NewResampler(config *ResampleConfig) *Resampler {
 //   - targetRate: desired sample rate in Hz (1000-768000)
 //
 // Returns resampled audio data or an error if resampling fails.
-// Uses buffer pooling for memory efficiency.
+//
+// Buffer ownership: the result is allocated from the shared audio buffer
+// pool to amortize allocation, but the resampler never returns it to the
+// pool — results routinely outlive the call, and returning them would hand
+// out aliased memory. Callers must therefore NOT Put the result back into
+// [DefaultAudioBufferPool] (or any pool); treat it as ordinary garbage-collected
+// memory. The pool only helps the allocations that stay inside this package.
 //
 // Thread-safe: can be called concurrently from multiple goroutines.
 func (r *Resampler) Resample(audioData []float32, sourceRate, targetRate int) ([]float32, error) {
@@ -292,7 +298,9 @@ func (r *Resampler) ConvertChannels(audioData []float32, sourceChannels, targetC
 	return output, nil
 }
 
-// NormalizeAudio normalizes audio to target RMS level
+// NormalizeAudio normalizes audio to target RMS level. Like Resample, the
+// result comes from the shared buffer pool and must not be Put back; see the
+// Resample ownership note.
 func (r *Resampler) NormalizeAudio(audioData []float32, targetRMS float32) []float32 {
 	if len(audioData) == 0 {
 		return audioData

@@ -86,8 +86,12 @@ func (h *HNSWIndex) Add(ctx context.Context, id string, vector []float32) error 
 	// Get integer ID for the string ID
 	intID := h.mapper.GetIntID(id)
 
-	// Add to HNSW index
-	hnswlib.AddPoint(h.index, vector, uint64(intID))
+	// Add to HNSW index. The Safe variant reports failure (bad handle, or
+	// the C++ addPoint threw — e.g. the index is at MaxElements) instead of
+	// silently dropping the point.
+	if code := hnswlib.AddPointSafe(h.index, vector, uint64(intID)); code != 0 {
+		return fmt.Errorf("hnsw: add %q failed (status %d; index may be at its max elements)", id, code)
+	}
 
 	return nil
 }

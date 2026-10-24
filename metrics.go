@@ -29,14 +29,16 @@ type MetricsCollector struct {
 	// Overall system metrics
 	totalRequests int64
 	totalErrors   int64
-	uptime        time.Time
+	// uptime is the collector's start as Unix nanoseconds; atomic because
+	// Reset can run while GetMetrics takes a snapshot.
+	uptime atomic.Int64
 }
 
 // NewMetricsCollector creates a new metrics collector
 func NewMetricsCollector() *MetricsCollector {
-	return &MetricsCollector{
-		uptime: time.Now(),
-	}
+	m := &MetricsCollector{}
+	m.uptime.Store(time.Now().UnixNano())
+	return m
 }
 
 // RecordAudioProcessing records audio processing metrics
@@ -122,7 +124,7 @@ func (m *MetricsCollector) GetMetrics() *MetricsSnapshot {
 
 	snapshot.TotalRequests = atomic.LoadInt64(&m.totalRequests)
 	snapshot.TotalErrors = atomic.LoadInt64(&m.totalErrors)
-	snapshot.Uptime = time.Since(m.uptime)
+	snapshot.Uptime = time.Since(time.Unix(0, m.uptime.Load()))
 
 	return snapshot
 }
@@ -258,5 +260,5 @@ func (m *MetricsCollector) Reset() {
 	atomic.StoreInt64(&m.totalRequests, 0)
 	atomic.StoreInt64(&m.totalErrors, 0)
 
-	m.uptime = time.Now()
+	m.uptime.Store(time.Now().UnixNano())
 }

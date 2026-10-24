@@ -4,7 +4,15 @@ import (
 	"sync"
 )
 
-// AudioBufferPool manages size-classed buffer pools for audio processing
+// AudioBufferPool manages size-classed buffer pools for audio processing.
+//
+// Ownership rule for this package's exported pools (including
+// [DefaultAudioBufferPool]): Get and Put are for buffers whose lifetime a
+// single call controls. Values returned to CALLERS — for example by
+// [Resampler.Resample] — are never returned to the pool by this package and
+// must not be Put by callers either: the slice would be handed out again
+// while its old contents are still referenced. Pool results that escape a
+// call are garbage-collected like any other slice.
 type AudioBufferPool struct {
 	small  sync.Pool // 1KB - 8KB (1024 - 8192 float32 values)
 	medium sync.Pool // 8KB - 64KB (8192 - 65536 float32 values)
