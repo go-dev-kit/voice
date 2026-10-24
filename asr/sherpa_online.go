@@ -126,6 +126,10 @@ func buildOnlineRecognizerConfigFor(config *Config, online OnlineConfig) (*sherp
 		ModelType:     online.ModelType,
 		TokensBufSize: 0,
 	}
+	if online.HotwordsFile != "" || online.HotwordsText != "" {
+		modelConfig.ModelingUnit = online.ModelingUnit
+		modelConfig.BpeVocab = online.BpeVocab
+	}
 
 	if online.EncoderPath != "" || online.DecoderPath != "" || online.JoinerPath != "" {
 		if online.EncoderPath == "" || online.DecoderPath == "" || online.JoinerPath == "" {
@@ -154,9 +158,13 @@ func buildOnlineRecognizerConfigFor(config *Config, online OnlineConfig) (*sherp
 			SampleRate: config.SampleRate,
 			FeatureDim: config.FeatureDim,
 		},
-		ModelConfig:    modelConfig,
-		DecodingMethod: config.DecodingMethod,
-		MaxActivePaths: config.MaxActivePaths,
+		ModelConfig:     modelConfig,
+		DecodingMethod:  config.DecodingMethod,
+		MaxActivePaths:  config.MaxActivePaths,
+		HotwordsFile:    online.HotwordsFile,
+		HotwordsScore:   online.HotwordsScore,
+		HotwordsBuf:     online.HotwordsText,
+		HotwordsBufSize: len(online.HotwordsText),
 	}, nil
 }
 

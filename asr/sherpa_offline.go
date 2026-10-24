@@ -226,6 +226,11 @@ func buildOfflineRecognizerConfig(config *Config) (*sherpa.OfflineRecognizerConf
 		}
 	}
 
+	if offline.HotwordsFile != "" {
+		modelConfig.ModelingUnit = offline.ModelingUnit
+		modelConfig.BpeVocab = offline.BpeVocab
+	}
+
 	return &sherpa.OfflineRecognizerConfig{
 		FeatConfig: sherpa.FeatureConfig{
 			SampleRate: config.SampleRate,
@@ -234,6 +239,8 @@ func buildOfflineRecognizerConfig(config *Config) (*sherpa.OfflineRecognizerConf
 		ModelConfig:    modelConfig,
 		DecodingMethod: config.DecodingMethod,
 		MaxActivePaths: config.MaxActivePaths,
+		HotwordsFile:   offline.HotwordsFile,
+		HotwordsScore:  offline.HotwordsScore,
 	}, nil
 }
 
