@@ -3,8 +3,12 @@
 # Reference for the env-gated native smoke tests and the `make fetch-test-models`
 # target. VoiceKit ships NO model weights (see scripts/check-forbidden-files.sh);
 # this file only records which models to fetch into $VK_TEST_MODEL_DIR and where
-# they come from. `sha256` is intentionally empty — the fetch step pins the digest
-# on first download so it is never fabricated here.
+# they come from. `url` points at sherpa-onnx release assets (existence checked
+# with HTTP HEAD). `sha256` is filled ONLY for assets that were downloaded and
+# hashed (silero, ten-vad, pyannote segmentation, 3D-Speaker CAM++); the large
+# archives stay unpinned so the fetch step prints the digest to pin on first
+# download. Digests are never fabricated here. Entries with an empty `url`
+# (paraformer, streaming zipformer) have no verified upstream asset yet.
 #
 # Sources:
 #  - sherpa-onnx model zoo:   https://github.com/k2-fsa/sherpa-onnx/releases
@@ -25,12 +29,12 @@ asr_offline:
     - family: sense_voice
       hf: FunAudioLLM/SenseVoiceSmall
       note: multilingual (zh/en/ja/ko/yue), strong batch accuracy, single-file
-      url: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2"
       sha256: ""
     - family: whisper
       hf: openai/whisper-large-v3-turbo
       note: multilingual reference; encoder+decoder
-      url: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-turbo.tar.bz2"
       sha256: ""
     - family: paraformer
       hf: csukuangfj/sherpa-onnx-paraformer-zh
@@ -39,7 +43,7 @@ asr_offline:
     - family: transducer          # model_type nemo_transducer
       hf: nvidia/parakeet-tdt-0.6b-v3
       note: top batch WER on the Open ASR leaderboard; sherpa int8 export ~15x real time on 4 CPU threads (FLEURS de 6.9% WER)
-      url: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2"
       sha256: ""
 
 asr_online:
@@ -49,13 +53,13 @@ asr_online:
       key: nemotron_streaming
       hf: nvidia/nemotron-speech-streaming-en-0.6b
       note: recommended default for real-time on-device English streaming
-      url: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-160ms-int8-2026-04-25.tar.bz2"
       sha256: ""
     - family: transducer
       key: nemotron_streaming_multilingual
       hf: nvidia/nemotron-3.5-asr-streaming-0.6b
       note: 40 locales; prompt_index handled inside sherpa (no extra config)
-      url: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-160ms-int8-2026-06-11.tar.bz2"
       sha256: ""
     - family: zipformer2_ctc
       key: zipformer_streaming
@@ -75,8 +79,8 @@ vad:
       sha256: "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
     - provider: ten_vad
       hf: TEN-framework/ten-vad              # modified Apache-2.0, opt-in
-      url: ""
-      sha256: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx"
+      sha256: "718cb7eef47e3cf5ddbe7e967a7503f46b8b469c0706872f494dfa921b486206"
 
 tts:
   default: kokoro
@@ -84,19 +88,19 @@ tts:
     - family: kokoro
       hf: hexgrad/Kokoro-82M
       note: efficiency default; 8 languages, fixed voice packs
-      url: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2"
       sha256: ""
     - family: kitten
       hf: KittenML/kitten-tts-nano
-      url: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kitten-nano-en-v0_8-int8.tar.bz2"
       sha256: ""
     - family: supertonic
       note: Supertonic-3 (31 languages, expression tags)
-      url: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2"
       sha256: ""
     - family: vits
       hf: csukuangfj/vits-piper-en_US
-      url: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low-int8.tar.bz2"
       sha256: ""
 
 diarization:
@@ -104,16 +108,16 @@ diarization:
   segmentation:
     - hf: pyannote/segmentation-3.0
       note: or pyannote.audio 4.0 community-1
-      url: ""
-      sha256: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+      sha256: "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"
   embedding:
     - hf: 3D-Speaker/cam++                   # CAM++ speaker embedding
-      url: ""
-      sha256: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
+      sha256: "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b"
 
 speaker:
   embedding:
     - hf: 3D-Speaker/cam++
       note: cosine similarity + HNSW index; typical dim 192-512
-      url: ""
-      sha256: ""
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
+      sha256: "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b"
