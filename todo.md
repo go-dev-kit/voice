@@ -1,5 +1,29 @@
 # VoiceKit Foundation Sprint Todo
 
+## Backlog fix sprint (2026-10)
+
+- [x] Whisper: empty or "auto" language auto-detects (Config.Language no longer
+  leaks), detected code returned, invalid language/task refused at validation
+  instead of a native process exit; also on v0.6.1 candidate branch.
+- [x] Recognizer-level hotwords for online and offline transducers with
+  validation against sherpa-onnx v1.13.8 behaviour.
+- [x] evaluation: German normalizer profile (default unchanged; numbers,
+  signs, ranges, % and degree kept intact; Normalizer.Version), RTFx, FLEURS
+  TSV and JSONL manifest loaders, S/D/I breakdown, paired bootstrap.
+- [x] meeting: consent and retention metadata, DeletionDue, RequireConsent
+  export gating, deterministic stdlib DOCX export.
+- [x] modelstore: JSON manifest, digest verification, safe fetch/extract;
+  sherpa-onnx release URLs pinned in testdata/model_matrix.yaml; fetch script
+  column fix.
+- [x] audio: extreme sample-rate and malformed WAV coverage, FuzzDecodeWAV,
+  sinc fallback and 4 GiB WAV fixes.
+- [x] go-hnswlib v1.5.0.
+- [x] Env-gated real-model benchmarks; pooling decision recorded.
+- [ ] Quiet-host rerun: first-decode penalty, Whisper auto vs forced,
+  transcriber RTF with VAD, HNSW Add path.
+- [ ] pebble: ratchet stores to format 13 on v1.1.5, then move to v2.
+- [ ] Bridge model_matrix.yaml to modelstore manifests; pin remaining digests.
+
 ## ASR streaming correctness sprint (2026-09, COMPLETE — v0.4.0)
 
 - [x] Feed caller chunks to Sherpa exactly once; remove rolling-window replay and

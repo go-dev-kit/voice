@@ -12,13 +12,13 @@ A reusable Go 1.26.4 library for local voice processing experiments and audio pl
 
 | Capability | Status | Runtime requirements |
 | --- | --- | --- |
-| Audio conversion/resampling | Usable foundation | WAV/PCM encode/decode; FLAC/MP3/Ogg-Vorbis decode via pure-Go libraries. AAC/M4A and compressed encoding return explicit unsupported errors. |
+| Audio conversion/resampling | Usable foundation | WAV/PCM encode/decode; FLAC/MP3/Ogg-Vorbis decode via pure-Go libraries. AAC/M4A and compressed encoding return explicit unsupported errors. Resampling and WAV decode are table-tested from 4 kHz to 384 kHz and the WAV decoder is fuzzed. |
 | Speaker recognition | Experimental but real | Sherpa speaker embedding model path and speaker data directory. Speaker embedding streams are single-use and released after extraction. |
 | ASR | Long-audio-safe Sherpa offline transcriber plus bounded Sherpa online streaming service | Offline or online Sherpa model files. Offline input of any length is cut into decodes of at most 25 s (Silero/TEN VAD segmentation when configured), never truncated. Streaming admission enforces `MaxConcurrentStreams`; model-native token timing is exposed separately from real word segmentation. |
 | VAD | Runtime seam with explicit providers | `none`, `energy`, or Sherpa Silero/TEN with a configured model path. |
 | Diarization | Sherpa offline diarization backend | Segmentation and embedding model paths. The old silence/clustering path is an explicit `basic` backend for tests/local experiments. |
 | TTS | Sherpa offline and streaming speech synthesis | VITS, Matcha, Kokoro, KittenTTS, ZipVoice, Pocket, or Supertonic model files. TTS enabled without required backend paths is a validation error. |
-| Meeting intelligence | Product-domain foundation | Typed meeting artifacts, deterministic mapping from diarized ASR output, Markdown/JSON/SRT/WebVTT exports, export-time redaction enforcement, provider-neutral analysis, a stdlib-only reference analyzer, and deterministic evaluation metrics. |
+| Meeting intelligence | Product-domain foundation | Typed meeting artifacts, deterministic mapping from diarized ASR output, Markdown/JSON/SRT/WebVTT/DOCX exports, consent and retention metadata, export-time redaction and consent enforcement, provider-neutral analysis, a stdlib-only reference analyzer, and deterministic evaluation metrics. |
 
 For the developer handoff guide covering meeting data flow, analyzer extension
 points, redaction/export safety, evaluation metrics, and validation commands,
@@ -27,7 +27,15 @@ see [MEETING_INTELLIGENCE.md](MEETING_INTELLIGENCE.md).
 ### Recommended models (July 2026)
 
 Model files are supplied by the caller; [`testdata/model_matrix.yaml`](testdata/model_matrix.yaml)
-records the recommended choices and their sources:
+records the recommended choices and their sources (sherpa-onnx release URLs are
+pinned where verified; sha256 digests only where the archive was downloaded and
+hashed). To download and verify models from your own code, use the stdlib-only
+`modelstore` package: a JSON manifest of entries (`name`, `family`, `url`,
+`sha256`, `archive`, `files`), `Entry.Verify` for installed files, and
+`modelstore.Fetch`, which verifies the digest before use, extracts tar.gz/tar.bz2
+safely (no absolute paths, traversal, hardlinks, or links that leave the model
+directory; size and member limits) and publishes atomically. Unpinned entries
+need `WithAllowUnpinned()` and report the digest to pin.
 
 - **Streaming ASR**: NVIDIA Nemotron Speech Streaming 0.6B (RNNT transducer — use
   the online `transducer` family); Zipformer2-CTC / Parakeet as alternatives.
@@ -36,7 +44,7 @@ records the recommended choices and their sources:
 - **Diarization**: pyannote segmentation-3.0 (or 4.0 community-1) + 3D-Speaker CAM++.
 - **TTS**: Kokoro-82M as the efficiency default.
 
-Runs on sherpa-onnx-go v1.13.8 (ONNX Runtime 1.28.2). Local and CI verification use the Go 1.26.4 module floor.
+Runs on sherpa-onnx-go v1.13.8 (ONNX Runtime 1.28.2). Local and CI verification use the Go 1.27.0 module floor (toolchain go1.27.3).
 
 ## Installation
 
@@ -347,12 +355,12 @@ type Logger interface {
 ### Audio Format Support
 - **Compressed Formats**: FLAC, MP3, and Ogg/Vorbis **decoding** are supported via pure-Go libraries (no CGO); AAC/M4A decoding and all compressed **encoding** are not implemented and return explicit unsupported-format errors
 - **Metadata**: Format-specific metadata (tags, etc.) not preserved
-- **Sample Rates**: Limited testing on extreme sample rates (>192kHz, <8kHz)
+- **Sample Rates**: `Resampler` accepts 1 to 768 kHz and `AudioConfig`/`ConvertAudio` 8 to 192 kHz; resampling and `DecodeMono` are table-tested at 4, 6, 8, 11.025, 22.05, 44.1, 48, 96, 192 and 384 kHz (mono/stereo, 8/16/24/32-bit PCM and float WAV). Output length is `int(n*ratio)`, so a 1-sample input downsampled can yield 0 samples. WAV encoding refuses data over the 4 GiB RIFF limit
 
 ### Speaker Recognition
 - **Model Dependencies**: Requires specific Sherpa-ONNX model files
 - **Embedding Quality**: Performance depends on training data quality
-- **Real-time Constraints**: Embedding extraction is single-use stream based until model-backed benchmarks prove a safe pooling strategy
+- **Real-time Constraints**: Embedding extraction uses a single-use stream. Measured with CAM++ (October 2026): creating a stream costs about 0.2 to 0.5 ms against about 0.4 s or more for one extraction, so stream pooling is not planned
 
 ### Diarization
 - **Model Dependencies**: Production diarization requires Sherpa segmentation and embedding model files
@@ -363,7 +371,9 @@ type Logger interface {
 - **Model Dependencies**: Requires Sherpa offline or online model files, depending on `ASR.Backend`
 - **CGO Requirements**: Uses Sherpa ONNX native bindings; CGO must be enabled
 - **Runtime Provider**: CPU is the default; CUDA/CoreML availability depends on the Sherpa build and platform
-- **Language Support**: Determined by the configured Sherpa model
+- **Language Support**: Determined by the configured Sherpa model. For Whisper, an empty or `"auto"` `Offline.Language` means auto-detect (the top-level `Language` is not inherited) and the detected code is returned in `Transcription.Language`; any other value must be an openai/whisper language code and `Offline.Task` must be `transcribe` or `translate`, otherwise validation fails instead of the native decoder exiting the process
+- **Hotwords / contextual biasing**: transducer models only (online and offline), with `DecodingMethod = "modified_beam_search"`. Set `HotwordsFile` (online also `HotwordsText`), optional `HotwordsScore`, and `ModelingUnit` (`cjkchar`, `bpe` or `cjkchar+bpe`) plus `BpeVocab` for BPE units. Validation refuses combinations Sherpa would ignore or exit on; phrases that do not tokenize into the model vocabulary are skipped by Sherpa and cannot be detected at config time. Measure before enabling: on NeMo transducers (Parakeet) Sherpa's hotword segmentation can differ from the NeMo tokenizer (sherpa-onnx PR 3980, open), Parakeet exports ship no `bpe.vocab`, and a German medical dictation benchmark (October 2026) measured no WER or term-recall gain from Parakeet hotwords while a score of 3.0 inserted wrong drug names. `OfflineConfig.Hotwords` remains the FunASR-nano/Qwen3 prompt field
+- **Recognizer Init Cost**: measured October 2026 on Apple M2 (loaded host, treat as upper bounds): offline init about 1.9 s for Parakeet TDT 0.6B int8 and 1 to 1.5 s for Whisper small int8. Build recognizers once per model and reuse them; a recognizer pool is a throughput decision (`Offline.MaxConcurrentDecodes` or more instances), not an init-cost one
 - **Streaming Finalization**: `ProcessAudioChunk` returns partial results until native endpoint detection or VAD finalization produces a final result
 - **Long Offline Audio**: Sherpa offline Whisper keeps only the first 30 s of one decode and NeMo Parakeet exports fail from about 30 s, while Silero's `max_speech_duration` does not cap segment length. `asr.NewOfflineTranscriber` (used by `VoiceKit.Transcriber()`) therefore never hands a decoder more than `asr.MaxDecodeDuration` (25 s): it segments with VAD, merges short spans, and cuts longer spans at the quietest point with a 2 s overlap. A bare `SherpaOfflineModel` refuses over-long input with `*asr.AudioTooLongError` (30 s for Whisper by default, `Offline.MaxDecodeSeconds` otherwise) instead of truncating
 - **Offline Concurrency**: one `SherpaOfflineModel` decodes one request at a time unless `Offline.MaxConcurrentDecodes` allows more on the shared native recognizer (verified to give identical text for the transducer family with Parakeet TDT and for Whisper; `qwen3_asr` and `funasr_nano`, whose LLM decoders sample, always decode one at a time); queued callers leave the queue when their context ends, and `Close` waits for in-flight decodes
@@ -375,8 +385,9 @@ type Logger interface {
 
 ### Meeting Intelligence
 - **Reference Analyzer**: `meeting.HeuristicAnalyzer` is a deterministic baseline for local examples and tests, not an LLM-quality summarizer.
-- **Redaction Scope**: The built-in redactor covers emails, phone-like numbers, URLs, and configured literal terms. It is not a complete privacy, consent, retention, or compliance system.
-- **Evaluation Scope**: The `evaluation` package provides deterministic WER/CER, speaker attribution, action-item, real-time-factor, and diarization-error-rate metrics. It does not yet include model-backed benchmark corpora or hosted-provider comparisons.
+- **Redaction Scope**: The built-in redactor covers emails, phone-like numbers, URLs, and configured literal terms. It is not a complete privacy or compliance system.
+- **Consent and Retention**: `Meeting.Consent` and `Meeting.Retention` record consent status and a retention deadline (`DeletionDue`), and `ExportOptions.RequireConsent` refuses export without obtained consent. VoiceKit computes deadlines but does not run deletion jobs.
+- **Evaluation Scope**: The `evaluation` package provides deterministic WER/CER (default and German `Normalizer` profiles; the German profile keeps decimals, clock times, signs, ranges and `%`/`°` intact so one wrong digit is one word error, and `Normalizer.Version()` must be recorded with every score because numbers from different versions are not comparable), speaker attribution, action-item, real-time-factor (`RealTimeFactor` = processing/audio, `RTFx` = audio/processing), and diarization-error-rate metrics, plus FLEURS TSV and JSONL manifest loaders. `TextReport` splits word errors into substitutions, deletions and insertions. WER on a few hundred utterances cannot separate systems about a point apart, so use `PairedBootstrap` to compare two systems on the same utterances: it returns the pooled WER difference and a seeded percentile interval, resampling whole groups (speaker or shared text) when `Group` is set. The interval is not a p-value. Full Unicode NFC is not applied (only umlaut composition) to avoid a golang.org/x/text dependency. It does not include benchmark corpora or hosted-provider comparisons.
 
 ### Memory Management
 - **Large Files**: Memory usage scales linearly with audio duration
@@ -1124,14 +1135,19 @@ type OnlineConfig struct {
 }
 
 type OfflineConfig struct {
-    ModelFamily string // "transducer", "paraformer", "zipformer_ctc", "nemo_ctc", "sense_voice", or "whisper"
+    ModelFamily string // see "ASR Offline" for the full family list
     TokensPath  string
     EncoderPath string
     DecoderPath string
     JoinerPath  string
     ModelPath   string
-    Language    string
-    Task        string // Whisper task, usually "transcribe"
+    Language    string // Whisper: "" or "auto" auto-detects; otherwise an openai/whisper code
+    Task        string // Whisper task: "transcribe" (default) or "translate"
+    HotwordsFile  string  // transducer + modified_beam_search only
+    HotwordsScore float32 // 0 keeps Sherpa's default 1.5
+    ModelingUnit  string  // "cjkchar", "bpe", "cjkchar+bpe"
+    BpeVocab      string  // required for BPE modeling units
+    // ...further family-specific fields, see asr/config.go
 }
 ```
 

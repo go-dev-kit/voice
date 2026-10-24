@@ -73,20 +73,22 @@ Current product gaps:
   baseline.
 - No meeting capture adapters for calendar, desktop audio, browser extension,
   Zoom, Google Meet, Teams, or mobile capture.
-- No long-audio ingestion pipeline for MP3, M4A, AAC, OGG, FLAC, or video.
-- No DOCX, Google Docs, email recap, Slack, Jira, Asana, Notion, Salesforce, or
-  HubSpot export adapters beyond the current Markdown, JSON, SRT, and WebVTT
-  exports.
-- No ASR glossary/custom-vocabulary or transcript-cleanup policy surface;
-  keyword spotting is available as a separate streaming capability.
-- No full privacy/consent/retention layer; deterministic PII-style redaction is
-  available before export but is not a compliance guarantee.
+- No AAC/M4A or video ingestion (WAV, PCM, FLAC, MP3 and Ogg/Vorbis decode,
+  and VAD-segmented long audio through `asr.NewOfflineTranscriber`, exist).
+- No Google Docs, email recap, Slack, Jira, Asana, Notion, Salesforce, or
+  HubSpot export adapters beyond the current Markdown, JSON, SRT, WebVTT, and
+  DOCX exports.
+- No transcript-cleanup policy surface. Recognizer-level hotwords exist for
+  transducer models; keyword spotting is a separate streaming capability.
+- No consent capture flow or retention enforcement (deletion jobs). Consent
+  and retention metadata, `DeletionDue`, export-time `RequireConsent`, and
+  deterministic PII-style redaction exist but are not a compliance guarantee.
 - No searchable meeting memory or cross-meeting retrieval.
 - No voice-agent event protocol with barge-in, end-of-turn, streaming TTS, or
   tool calls.
 - No DER-focused benchmark corpus, latency dashboard, or model/provider
-  comparison harness beyond deterministic fixture metrics and local SDK
-  benchmark coverage.
+  comparison harness beyond deterministic fixture metrics, corpus loaders, and
+  env-gated real-model benchmarks.
 
 ## Engine Track — Streaming Completeness & Capability Exposure (2026-07)
 
@@ -142,8 +144,11 @@ and are not a simple VoiceKit wrapper.
 8. Speech denoiser preprocessing stage (optional, before VAD/ASR).
 9. Multi-online-model hosting (relax the single-backend-per-instance constraint
    so one service can host more than one online model).
-10. Recognizer init/first-chunk benchmark shipped; pooling remains intentionally
-    deferred until real-model measurements justify it.
+10. Recognizer init/first-chunk benchmark shipped. October 2026 real-model
+    measurements (offline init about 1.9 s Parakeet TDT int8, 1 to 1.5 s
+    Whisper small int8; speaker stream creation under 0.1 percent of an
+    extraction) do not justify a recognizer or stream pool; a warm-up decode
+    at construction is pending a quiet-host rerun of the first-decode penalty.
 11. `evaluation` DER metric; speaker DB retention/eviction (existing stretch).
 
 Deferred/strategic (see Later): source separation, audio tagging, overlap-aware
@@ -361,8 +366,9 @@ Effort: Medium to Large.
 - Adopt the v0.4.0 `FinishStream`, bounded-admission, and `Tokens` contracts in
   downstream services; add word segmentation only where a consumer actually
   requires word-level alignment.
-- Capture real-model ASR init, first-token, WER, and long-session measurements
-  before adding recognizer pooling or changing defaults.
+- Rerun the env-gated real-model benchmarks on a quiet host (first-decode
+  penalty, Whisper auto vs forced language, transcriber RTF with VAD, and the
+  go-hnswlib v1.5.0 Add path) before adding a warm-up decode.
 - Expand evaluation fixtures toward realistic meetings, noisy calls,
   multilingual calls, and overlapping speakers.
 - Expand the implemented DER metric with representative diarization benchmark
@@ -373,12 +379,13 @@ Effort: Medium to Large.
   vet, tests, race checks, and forbidden-file hygiene.
 - Design the next analyzer adapter boundary for a local LLM or hosted provider
   while keeping provider SDKs out of core meeting schemas.
-- Define consent and retention metadata for meeting artifacts before adding
-  capture adapters or external workflow exports.
+- Ratchet pebble stores to format major version 13 in a v1.1.5 release, then
+  move to pebble v2 (v2 refuses the format 1 stores VoiceKit writes today).
 
 ### Next
 
-- Add glossary/hotword config where Sherpa model support exists.
+- Measure hotword biasing on a domain corpus (term recall vs WER cost of
+  modified_beam_search).
 - Add file ingestion adapters for common meeting recordings.
 - Add DOCX, Google Docs, Slack, Jira, Notion, Asana, Salesforce, and HubSpot
   export adapters behind explicit boundaries.
@@ -388,7 +395,7 @@ Effort: Medium to Large.
 - Add searchable meeting memory.
 - Add workflow integrations and connector adapters.
 - Add realtime voice-agent event protocol.
-- Add model manifest/download/verify tooling.
+- Bridge `testdata/model_matrix.yaml` to `modelstore` manifests.
 
 ## Initial Implementation Slice
 
@@ -441,10 +448,18 @@ dependency, or new model dependency. The developer handoff guide is
   VAD ownership, retired-session guards, deterministic bounded admission,
   terminal native-state cleanup, idempotent shutdown, and model-native token
   timing separated from word segmentation.
+- Completed (October 2026): Whisper language auto-detect and config-time
+  validation of Whisper language/task; recognizer-level hotwords for
+  transducer models; `evaluation` German normalizer (numbers, signs, ranges and
+  unit symbols kept intact, versioned), `RTFx`, FLEURS/JSONL loaders, word
+  error breakdown, and seeded paired bootstrap; meeting consent/retention metadata, `RequireConsent`, and DOCX
+  export; `modelstore` manifest/verify/fetch package and pinned release URLs;
+  extreme sample-rate coverage, WAV fuzzing, and two audio fixes; go-hnswlib
+  v1.5.0; env-gated real-model benchmarks.
 - Still open: LLM-quality analyzer implementations, export adapters for
-  external tools, consent and retention policy metadata, searchable meeting
-  memory, DER benchmark corpora, latency dashboards, and real
-  capture/ingestion adapters.
+  external tools beyond DOCX, retention enforcement, searchable meeting memory,
+  DER benchmark corpora, latency dashboards, real capture/ingestion adapters,
+  AAC/M4A decode, and the pebble v2 migration.
 
 ## Source Notes
 
