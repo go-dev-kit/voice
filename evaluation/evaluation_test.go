@@ -1,7 +1,10 @@
 package evaluation
 
 import (
+	"encoding/json"
 	"errors"
+	"math/rand/v2"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,5 +128,74 @@ func TestRealTimeFactor(t *testing.T) {
 	}
 	if report.RealTimeFactor != 0.5 {
 		t.Fatalf("expected report factor 0.5, got %+v", report)
+	}
+}
+
+func TestWordErrorBreakdownKnownAlignments(t *testing.T) {
+	tests := []struct {
+		name     string
+		ref, hyp string
+		sub, del int
+		ins      int
+	}{
+		{"identical", "a b c", "a b c", 0, 0, 0},
+		{"substitution", "a b c", "a x c", 1, 0, 0},
+		{"deletion", "a b c", "a c", 0, 1, 0},
+		{"insertion", "a c", "a b c", 0, 0, 1},
+		{"empty hypothesis", "a b", "", 0, 2, 0},
+		{"empty reference", "", "a b", 0, 0, 2},
+		{"mixed", "the cat sat on the mat", "the bat sat the mat now", 1, 1, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sub, del, ins := WordErrorBreakdown(strings.Fields(tt.ref), strings.Fields(tt.hyp))
+			if sub != tt.sub || del != tt.del || ins != tt.ins {
+				t.Fatalf("got S=%d D=%d I=%d, want S=%d D=%d I=%d", sub, del, ins, tt.sub, tt.del, tt.ins)
+			}
+		})
+	}
+}
+
+func TestWordErrorBreakdownSumsToEditDistance(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	words := []string{"a", "b", "c", "d"}
+	random := func() []string {
+		out := make([]string, rng.IntN(12))
+		for i := range out {
+			out[i] = words[rng.IntN(len(words))]
+		}
+		return out
+	}
+	for i := 0; i < 5000; i++ {
+		ref, hyp := random(), random()
+		sub, del, ins := WordErrorBreakdown(ref, hyp)
+		if want := levenshteinStrings(ref, hyp); sub+del+ins != want {
+			t.Fatalf("ref=%v hyp=%v: S+D+I=%d, edits=%d", ref, hyp, sub+del+ins, want)
+		}
+		if del-ins != len(ref)-len(hyp) {
+			t.Fatalf("ref=%v hyp=%v: D-I=%d, want %d", ref, hyp, del-ins, len(ref)-len(hyp))
+		}
+		if again1, again2, again3 := WordErrorBreakdown(ref, hyp); again1 != sub || again2 != del || again3 != ins {
+			t.Fatalf("breakdown is not deterministic for ref=%v hyp=%v", ref, hyp)
+		}
+	}
+}
+
+func TestTextReportBreakdownFieldsAndJSON(t *testing.T) {
+	report := EvaluateTranscriptText(
+		[]ReferenceTurn{{Text: "we need to ship the analyzer"}},
+		[]meeting.TranscriptTurn{{Text: "we need ship a analyzer today"}},
+	)
+	if report.Substitutions+report.Deletions+report.Insertions != report.WordEdits {
+		t.Fatalf("breakdown does not sum to word edits: %+v", report)
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"word_edits", "reference_words", "substitutions", "deletions", "insertions"} {
+		if !strings.Contains(string(raw), `"`+key+`":`) {
+			t.Fatalf("JSON %s lacks key %q", raw, key)
+		}
 	}
 }

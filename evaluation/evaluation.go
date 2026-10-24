@@ -49,6 +49,15 @@ type TextReport struct {
 	ReferenceWords     int     `json:"reference_words"`
 	CharacterEdits     int     `json:"character_edits"`
 	ReferenceChars     int     `json:"reference_chars"`
+
+	// Substitutions, Deletions and Insertions split WordEdits by error type
+	// along one minimum-edit alignment (see WordErrorBreakdown), so that
+	// Substitutions+Deletions+Insertions == WordEdits. Deletions are reference
+	// words missing from the hypothesis, insertions are extra hypothesis words.
+	// They are zero on a TextReport not built by EvaluateTranscriptText[With].
+	Substitutions int `json:"substitutions"`
+	Deletions     int `json:"deletions"`
+	Insertions    int `json:"insertions"`
 }
 
 // SpeakerAttributionReport scores turn-level speaker assignment.
@@ -105,7 +114,11 @@ func EvaluateTranscriptText(reference []ReferenceTurn, prediction []meeting.Tran
 // EvaluateTranscriptTextWith is EvaluateTranscriptText with an explicit
 // normalizer, for example GermanNormalizer.
 func EvaluateTranscriptTextWith(n Normalizer, reference []ReferenceTurn, prediction []meeting.TranscriptTurn) TextReport {
-	return ScoreText(n, referenceTranscriptText(reference), predictionTranscriptText(prediction))
+	referenceText := referenceTranscriptText(reference)
+	predictionText := predictionTranscriptText(prediction)
+	report := ScoreText(n, referenceText, predictionText)
+	report.Substitutions, report.Deletions, report.Insertions = WordErrorBreakdown(n.Words(referenceText), n.Words(predictionText))
+	return report
 }
 
 // EvaluateSpeakerAttribution scores turn-level speaker assignment.
@@ -264,6 +277,61 @@ func levenshteinStrings(reference []string, prediction []string) int {
 	return levenshtein(len(reference), len(prediction), func(i int, j int) bool {
 		return reference[i] == prediction[j]
 	})
+}
+
+// WordErrorBreakdown splits the word edit distance between reference and
+// hypothesis into substitutions, deletions (reference words missing from the
+// hypothesis) and insertions (extra hypothesis words). The counts come from one
+// minimum-edit alignment, so substitutions+deletions+insertions always equals
+// the Levenshtein distance used for WER.
+//
+// A minimum-edit alignment is rarely unique, and different ones can split the
+// same total differently. The choice is deterministic: the backtrace starts at
+// the end of both sequences and, at each cell, prefers the diagonal move (match
+// or substitution), then deletion, then insertion.
+func WordErrorBreakdown(reference []string, hypothesis []string) (substitutions int, deletions int, insertions int) {
+	n, m := len(reference), len(hypothesis)
+	dist := make([][]int, n+1)
+	for i := range dist {
+		dist[i] = make([]int, m+1)
+		dist[i][0] = i
+	}
+	for j := 1; j <= m; j++ {
+		dist[0][j] = j
+	}
+	for i := 1; i <= n; i++ {
+		for j := 1; j <= m; j++ {
+			cost := 1
+			if reference[i-1] == hypothesis[j-1] {
+				cost = 0
+			}
+			dist[i][j] = minInt(dist[i-1][j]+1, dist[i][j-1]+1, dist[i-1][j-1]+cost)
+		}
+	}
+	for i, j := n, m; i > 0 || j > 0; {
+		switch {
+		case i > 0 && j > 0 && dist[i][j] == dist[i-1][j-1]+boolCost(reference[i-1] != hypothesis[j-1]):
+			if reference[i-1] != hypothesis[j-1] {
+				substitutions++
+			}
+			i--
+			j--
+		case i > 0 && dist[i][j] == dist[i-1][j]+1:
+			deletions++
+			i--
+		default:
+			insertions++
+			j--
+		}
+	}
+	return substitutions, deletions, insertions
+}
+
+func boolCost(differs bool) int {
+	if differs {
+		return 1
+	}
+	return 0
 }
 
 func levenshteinRunes(reference []rune, prediction []rune) int {
