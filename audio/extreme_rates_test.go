@@ -8,6 +8,30 @@ import (
 
 var extremeRates = []int{4000, 6000, 8000, 11025, 22050, 44100, 48000, 96000, 192000, 384000}
 
+// raceRates is the reduced rate set used under the race detector: the
+// extremes plus common speech and music rates keep the coverage that matters
+// while the all-pairs matrices stay inside CI's default test timeout.
+var raceRates = []int{4000, 22050, 48000, 384000}
+
+// matrixRates returns the full rate list, or the reduced one under -race.
+func matrixRates(full []int) []int {
+	if !raceEnabled {
+		return full
+	}
+	var out []int
+	for _, r := range full {
+		for _, keep := range raceRates {
+			if r == keep {
+				out = append(out, r)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return full[:1]
+	}
+	return out
+}
+
 // firstNonFinite reports the index of the first NaN or Inf sample, or -1.
 func firstNonFinite(x []float32) int {
 	for i, v := range x {
@@ -22,8 +46,8 @@ func TestResampleExtremeRatesSine(t *testing.T) {
 	const freq = 300.0 // well below the Nyquist rate of every tested rate
 	for _, method := range []ResampleMethod{MethodLinear, MethodCubic, MethodLanczos, MethodSinc} {
 		r := NewResampler(&ResampleConfig{Method: method, Quality: QualityHigh, FilterLength: 32})
-		for _, src := range extremeRates {
-			for _, dst := range extremeRates {
+		for _, src := range matrixRates(extremeRates) {
+			for _, dst := range matrixRates(extremeRates) {
 				if src == dst {
 					continue
 				}
@@ -108,9 +132,13 @@ func TestResampleDoesNotLeakPooledData(t *testing.T) {
 
 func TestDecodeMonoExtremeRates(t *testing.T) {
 	const target = 16000
-	for _, rate := range extremeRates {
+	bitDepths := []int{8, 16, 24, 32}
+	if raceEnabled {
+		bitDepths = []int{16, 24}
+	}
+	for _, rate := range matrixRates(extremeRates) {
 		for _, channels := range []int{1, 2} {
-			for _, bits := range []int{8, 16, 24, 32} {
+			for _, bits := range bitDepths {
 				t.Run(fmt.Sprintf("%dHz/%dch/%dbit", rate, channels, bits), func(t *testing.T) {
 					n := rate / 4
 					mono := sine(300, rate, n, 0.5)
@@ -223,7 +251,7 @@ func TestConvertAudioExtremeRates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rates := []int{8000, 11025, 22050, 44100, 48000, 96000, 192000}
+	rates := matrixRates([]int{8000, 11025, 22050, 44100, 48000, 96000, 192000})
 	for _, src := range rates {
 		for _, dst := range rates {
 			for _, ch := range []int{1, 2} {
