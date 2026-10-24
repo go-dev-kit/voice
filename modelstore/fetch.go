@@ -17,12 +17,18 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 )
 
 const (
 	defaultMaxDownload = 8 << 30
 	defaultMaxExtract  = 8 << 30
 	defaultMaxFiles    = 10000
+	// tempPrefix starts every temporary entry Fetch creates in dir. Fetch
+	// names them uniquely and removes them itself; after a crash a leftover
+	// is harmless and never blocks a later Fetch. Removing stale ones is the
+	// caller's job, and is safe only while no Fetch into dir is running.
+	tempPrefix = ".modelstore-"
 )
 
 // Result describes a completed Fetch.
@@ -67,7 +73,8 @@ func WithMaxFiles(n int) Option { return func(c *fetchConfig) { c.maxFiles = n }
 // expected files, and renamed into place, so a failed or canceled fetch
 // leaves no partial model behind. A client of nil means http.DefaultClient.
 //
-// The result is Entry.Target(dir). An existing target is replaced.
+// The result is Entry.Target(dir). An existing target is replaced. Symlinks in
+// an archive are kept only when they resolve inside the final model directory.
 func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, opts ...Option) (Result, error) {
 	cfg := fetchConfig{maxDownload: defaultMaxDownload, maxExtract: defaultMaxExtract, maxFiles: defaultMaxFiles}
 	for _, o := range opts {
@@ -87,18 +94,18 @@ func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, op
 		return Result{}, err
 	}
 
-	tmp, err := os.CreateTemp(dir, ".modelstore-dl-*")
+	tmp, err := os.CreateTemp(dir, tempPrefix+"dl-*")
 	if err != nil {
 		return Result{}, err
 	}
 	defer os.Remove(tmp.Name()) // no-op once renamed
+	// The handle stays open until the content has been used: every later
+	// read goes through it, never through the name, so the verified bytes
+	// are the bytes that get extracted or installed.
+	defer tmp.Close()
 	got, err := download(ctx, client, entry.URL, tmp, cfg.maxDownload)
-	closeErr := tmp.Close()
 	if err != nil {
 		return Result{}, err
-	}
-	if closeErr != nil {
-		return Result{}, closeErr
 	}
 	if pinned && got != entry.SHA256 {
 		return Result{}, &DigestError{What: entry.URL, Want: entry.SHA256, Got: got}
@@ -106,21 +113,27 @@ func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, op
 
 	res := Result{Path: entry.Target(dir), SHA256: got, Pinned: pinned}
 	if entry.Kind() == ArchiveNone {
-		if err := checkSingle(&entry, tmp.Name()); err != nil {
+		if err := checkSingle(&entry, tmp); err != nil {
 			return Result{}, err
 		}
-		if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		if err := tmp.Chmod(0o644); err != nil {
 			return Result{}, err
 		}
-		return res, replace(tmp.Name(), res.Path)
+		if err := tmp.Close(); err != nil {
+			return Result{}, err
+		}
+		return res, replace(dir, tmp.Name(), res.Path)
 	}
 
-	stage, err := os.MkdirTemp(dir, ".modelstore-x-*")
+	stage, err := os.MkdirTemp(dir, tempPrefix+"x-*")
 	if err != nil {
 		return Result{}, err
 	}
 	defer os.RemoveAll(stage) // no-op once renamed
-	if err := extract(ctx, tmp.Name(), entry.Kind(), stage, cfg); err != nil {
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return Result{}, err
+	}
+	if err := extract(ctx, tmp, entry.Kind(), stage, cfg); err != nil {
 		return Result{}, err
 	}
 	src := stage
@@ -129,22 +142,64 @@ func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, op
 	if ents, err := os.ReadDir(stage); err == nil && len(ents) == 1 && ents[0].IsDir() {
 		src = filepath.Join(stage, ents[0].Name())
 	}
+	// Links are checked against the final model directory, not the stage:
+	// promoting the top-level directory shortens every link's path by one
+	// element, so a link that stayed inside the stage can resolve outside src.
+	if err := checkTreeLinks(src); err != nil {
+		return Result{}, err
+	}
 	if err := verifyStaged(&entry, src); err != nil {
 		return Result{}, err
 	}
 	if err := os.Chmod(src, 0o755); err != nil {
 		return Result{}, err
 	}
-	return res, replace(src, res.Path)
+	return res, replace(dir, src, res.Path)
 }
 
 // checkSingle verifies the expected per-file digest of a single-file entry,
-// when it differs from the entry digest.
-func checkSingle(e *Entry, p string) error {
+// when it differs from the entry digest, reading through the open handle.
+func checkSingle(e *Entry, f *os.File) error {
 	if len(e.Files) == 1 && e.Files[0].SHA256 != "" {
-		return VerifyFile(p, e.Files[0].SHA256)
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		got, err := digestReader(f)
+		if err != nil {
+			return err
+		}
+		if got != e.Files[0].SHA256 {
+			return &DigestError{What: e.Files[0].Path, Want: e.Files[0].SHA256, Got: got}
+		}
 	}
 	return nil
+}
+
+// checkTreeLinks rejects any symlink under root that is absolute or whose
+// lexical target leaves root. checkLink already refuses links reached through
+// other links and ".." after a normal element, so lexical resolution is sound.
+func checkTreeLinks(root string) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&fs.ModeSymlink == 0 {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		target, err := os.Readlink(p)
+		if err != nil {
+			return err
+		}
+		resolved := path.Join(path.Dir(filepath.ToSlash(rel)), filepath.ToSlash(target))
+		if path.IsAbs(target) || !filepath.IsLocal(filepath.FromSlash(resolved)) {
+			return fmt.Errorf("%w: %q: symlink target %q escapes the model directory", ErrUnsafeArchive, filepath.ToSlash(rel), target)
+		}
+		return nil
+	})
 }
 
 func verifyStaged(e *Entry, root string) error {
@@ -161,24 +216,61 @@ func verifyStaged(e *Entry, root string) error {
 	return nil
 }
 
-// replace moves src to dst, displacing an existing dst. The final rename is
-// atomic; replacing an existing directory is two renames and can briefly leave
-// no dst.
-func replace(src, dst string) error {
-	if _, err := os.Lstat(dst); err == nil {
-		old := dst + ".old-" + filepath.Base(src)
-		if err := os.Rename(dst, old); err != nil {
-			return err
-		}
-		if err := os.Rename(src, dst); err != nil {
-			_ = os.Rename(old, dst)
-			return err
-		}
-		return os.RemoveAll(old)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
+// replaceMu serializes installs within a process; replace retries to cover
+// other processes.
+var replaceMu sync.Mutex
+
+// replace moves src to dst, displacing an existing dst. dst must be strictly
+// inside dir. The final rename is atomic; replacing an existing target is two
+// renames and can briefly leave no dst. The displaced target is parked in a
+// uniquely named ".modelstore-old-*" directory, so leftovers from a crash
+// never block a later Fetch. Deleting the parked copy after a successful swap
+// is best-effort: the model is installed either way. Concurrent Fetches of the
+// same target race benignly (one install wins); replace retries when another
+// one changes dst underneath it.
+func replace(dir, src, dst string) error {
+	rel, err := filepath.Rel(dir, dst)
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return fmt.Errorf("modelstore: refusing to replace %q: not inside %q", dst, dir)
 	}
-	return os.Rename(src, dst)
+	replaceMu.Lock()
+	defer replaceMu.Unlock()
+	var last error
+	for range 8 {
+		if _, err := os.Lstat(dst); errors.Is(err, fs.ErrNotExist) {
+			if last = os.Rename(src, dst); last == nil {
+				return nil
+			}
+			continue
+		} else if err != nil {
+			return err
+		}
+		holder, err := os.MkdirTemp(dir, tempPrefix+"old-*")
+		if err != nil {
+			return err
+		}
+		old := filepath.Join(holder, "old")
+		if last = os.Rename(dst, old); last != nil {
+			_ = os.Remove(holder)
+			if errors.Is(last, fs.ErrNotExist) {
+				continue // another Fetch moved dst first
+			}
+			return last
+		}
+		if last = os.Rename(src, dst); last != nil {
+			// Put the previous model back unless another Fetch already
+			// installed one.
+			_ = os.Rename(old, dst)
+			_ = os.RemoveAll(holder)
+			if _, err := os.Lstat(dst); err == nil {
+				continue
+			}
+			return last
+		}
+		_ = os.RemoveAll(holder)
+		return nil
+	}
+	return last
 }
 
 func download(ctx context.Context, client *http.Client, url string, w io.Writer, limit int64) (string, error) {
@@ -225,12 +317,9 @@ func (c *ctxReader) Read(p []byte) (int, error) {
 	return c.r.Read(p)
 }
 
-func extract(ctx context.Context, archive string, kind ArchiveKind, dst string, cfg fetchConfig) error {
-	f, err := os.Open(archive)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+// extract unpacks the archive read from f, which must be positioned at its
+// start, into dst.
+func extract(ctx context.Context, f io.Reader, kind ArchiveKind, dst string, cfg fetchConfig) error {
 	var src io.Reader
 	switch kind {
 	case ArchiveTarGz:

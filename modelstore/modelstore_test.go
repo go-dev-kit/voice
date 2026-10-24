@@ -9,11 +9,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -238,9 +240,14 @@ func TestFetchUnsafeArchive(t *testing.T) {
 			{name: "a", typ: tar.TypeSymlink, link: "."},
 			{name: "l", typ: tar.TypeSymlink, link: "a/../x"},
 		},
-		"write via link": {
+		"promoted link escapes final root": {
+			{name: "top/real.txt", body: "r"},
+			{name: "top/sub/l", typ: tar.TypeSymlink, link: "../../secret"},
+		},
+		"regular member over link to existing dir": {
+			{name: "sub/", typ: tar.TypeDir},
 			{name: "l", typ: tar.TypeSymlink, link: "sub"},
-			{name: "l/f", body: "x"},
+			{name: "l", body: "x"},
 		},
 	}
 	for name, members := range cases {
@@ -252,7 +259,7 @@ func TestFetchUnsafeArchive(t *testing.T) {
 			e := Entry{Name: "m", URL: srv.URL + "/m.tar.gz", SHA256: sum(arc), Archive: ArchiveTarGz}
 			if _, err := Fetch(context.Background(), srv.Client(), e, dir); err == nil {
 				t.Fatal("expected error")
-			} else if name != "write via link" && !errors.Is(err, ErrUnsafeArchive) {
+			} else if name != "regular member over link to existing dir" && !errors.Is(err, ErrUnsafeArchive) {
 				t.Fatalf("want ErrUnsafeArchive, got %v", err)
 			}
 			if _, err := os.Stat(filepath.Join(parent, "evil")); !os.IsNotExist(err) {
@@ -453,6 +460,310 @@ func TestParseManifest(t *testing.T) {
 	for name, doc := range bad {
 		if _, err := ParseManifest(strings.NewReader(doc)); !errors.Is(err, ErrInvalidManifest) {
 			t.Errorf("%s: got %v", name, err)
+		}
+	}
+}
+
+func TestFetchPromotedLinkStaysInsideModel(t *testing.T) {
+	// Exactly the review archive: valid against the stage root, but after the
+	// single top-level directory is promoted, sub/l would read <dir>/secret.
+	arc := tarGz(t,
+		member{name: "top/real.txt", body: "r"},
+		member{name: "top/sub/l", typ: tar.TypeSymlink, link: "../../secret"},
+	)
+	srv := serve(t, arc)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "secret"), []byte("s"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := Entry{Name: "m", URL: srv.URL + "/m.tar.gz", SHA256: sum(arc), Archive: ArchiveTarGz}
+	_, err := Fetch(context.Background(), srv.Client(), e, dir)
+	if !errors.Is(err, ErrUnsafeArchive) {
+		t.Fatalf("want ErrUnsafeArchive, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "m")); !os.IsNotExist(err) {
+		t.Fatalf("model with escaping link was installed: %v", err)
+	}
+	noTemp(t, dir)
+
+	// A link that stays inside the promoted directory is kept.
+	ok := tarGz(t,
+		member{name: "top/real.txt", body: "r"},
+		member{name: "top/sub/l", typ: tar.TypeSymlink, link: "../real.txt"},
+	)
+	srv2 := serve(t, ok)
+	e2 := Entry{Name: "m", URL: srv2.URL + "/m.tar.gz", SHA256: sum(ok), Archive: ArchiveTarGz}
+	if _, err := Fetch(context.Background(), srv2.Client(), e2, dir); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "m", "sub", "l")); err != nil || string(b) != "r" {
+		t.Fatalf("inside link: %q %v", b, err)
+	}
+}
+
+func TestEntryValidateNames(t *testing.T) {
+	const u = "https://x.test/"
+	bad := map[string]Entry{
+		"dot name":        {Name: ".", URL: u + "a", Archive: ArchiveTarGz},
+		"dotdot name":     {Name: "..", URL: u + "a"},
+		"unclean name":    {Name: "a.", URL: u + "a"}, // path.Clean keeps this, so it is a control below
+		"reserved prefix": {Name: ".modelstore-x", URL: u + "a", Archive: ArchiveTarGz},
+		"dotdot url base": {Name: "a", URL: u + "..", SHA256: sum(nil)},
+		"encoded dotdot":  {Name: "a", URL: u + "%2e%2e"},
+		"subdir file":     {Name: "a", URL: u + "a", Files: []File{{Path: "sub/x.onnx"}}},
+		"reserved file":   {Name: "a", URL: u + ".modelstore-dl-1"},
+		"dot file":        {Name: "a", URL: u + "x", Files: []File{{Path: "./x"}}},
+	}
+	delete(bad, "unclean name")
+	for name, e := range bad {
+		if err := e.Validate(); !errors.Is(err, ErrInvalidManifest) {
+			t.Errorf("%s: got %v", name, err)
+		}
+	}
+	// A bare host path falls back to the entry name.
+	e := Entry{Name: "a", URL: u}
+	if err := e.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Target("d"); got != filepath.Join("d", "a") {
+		t.Fatalf("target %q", got)
+	}
+}
+
+func TestManifestDuplicateTarget(t *testing.T) {
+	m := Manifest{Version: ManifestVersion, Models: []Entry{
+		{Name: "a", URL: "https://x.test/f.onnx", Files: []File{{Path: "same.onnx"}}},
+		{Name: "b", URL: "https://x.test/g.onnx", Files: []File{{Path: "same.onnx"}}},
+	}}
+	if err := m.Validate(); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("same single-file target: %v", err)
+	}
+	m = Manifest{Version: ManifestVersion, Models: []Entry{
+		{Name: "a", URL: "https://x.test/a.tar.gz", Archive: ArchiveTarGz},
+		{Name: "x", URL: "https://x.test/a", Files: []File{{Path: "a"}}},
+	}}
+	if err := m.Validate(); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("archive vs file target: %v", err)
+	}
+}
+
+func TestFetchRefusesEscapingTarget(t *testing.T) {
+	// Bypass nothing: Fetch validates, so a "%2e%2e" base never reaches the
+	// network and the parent of dir is untouched.
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "store")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer srv.Close()
+	e := Entry{Name: "a", URL: srv.URL + "/%2e%2e", SHA256: sum([]byte("x"))}
+	if _, err := Fetch(context.Background(), srv.Client(), e, dir); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("got %v", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatal("request made for invalid entry")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("store dir disturbed: %v", err)
+	}
+}
+
+func TestReplaceStaysInsideDir(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "store")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(dir, ".modelstore-dl-1")
+	if err := os.WriteFile(src, []byte("n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, dst := range []string{dir, parent, filepath.Join(dir, ".."), filepath.Join(parent, "other")} {
+		if err := replace(dir, src, dst); err == nil {
+			t.Errorf("replace onto %q succeeded", dst)
+		}
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("dir disturbed: %v", err)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("src moved: %v", err)
+	}
+}
+
+func TestFetchReplaceRobustness(t *testing.T) {
+	arc := tarGz(t, member{name: "r/a.txt", body: "new"})
+	srv := serve(t, arc)
+	dir := t.TempDir()
+	e := Entry{Name: "m", URL: srv.URL + "/m.tar.gz", SHA256: sum(arc), Archive: ArchiveTarGz, Files: []File{{Path: "a.txt"}}}
+
+	// Crash leftovers, including a non-empty one at the old deterministic
+	// name, must not break later fetches.
+	stale := filepath.Join(dir, "m.old-x")
+	if err := os.MkdirAll(filepath.Join(stale, "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "deep", "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleHolder := filepath.Join(dir, ".modelstore-old-leftover")
+	if err := os.MkdirAll(filepath.Join(staleHolder, "old", "f"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := Fetch(context.Background(), srv.Client(), e, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Concurrent fetches into one dir all succeed and leave a valid model.
+	var wg sync.WaitGroup
+	errs := make(chan error, 6)
+	for range 6 {
+		wg.Go(func() {
+			_, err := Fetch(context.Background(), srv.Client(), e, dir)
+			errs <- err
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent fetch: %v", err)
+		}
+	}
+	if err := e.Verify(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFetchCleanupFailureAfterSwapIsNotAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	arc := tarGz(t, member{name: "r/a.txt", body: "new"})
+	srv := serve(t, arc)
+	dir := t.TempDir()
+	e := Entry{Name: "m", URL: srv.URL + "/m.tar.gz", SHA256: sum(arc), Archive: ArchiveTarGz}
+	if _, err := Fetch(context.Background(), srv.Client(), e, dir); err != nil {
+		t.Fatal(err)
+	}
+	// A read-only subdirectory with content makes RemoveAll of the displaced
+	// copy fail after the swap succeeded.
+	m := filepath.Join(dir, "m")
+	locked := filepath.Join(m, "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, _ error) error {
+			if d != nil && d.IsDir() {
+				_ = os.Chmod(p, 0o755)
+			}
+			return nil
+		})
+	})
+	res, err := Fetch(context.Background(), srv.Client(), e, dir)
+	if err != nil {
+		t.Fatalf("installed model reported as failure: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(res.Path, "a.txt")); string(b) != "new" {
+		t.Fatal("new model not installed")
+	}
+}
+
+// swapTransport replaces the temporary download file with evil right before
+// the body is exhausted, i.e. between the digest being computed and any
+// reopening of the file by name.
+type swapTransport struct {
+	base http.RoundTripper
+	dir  string
+	evil []byte
+}
+
+type swapBody struct {
+	io.ReadCloser
+	once sync.Once
+	swap func()
+}
+
+func (b *swapBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.once.Do(b.swap)
+	}
+	return n, err
+}
+
+func (s swapTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := s.base.RoundTrip(r)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = &swapBody{ReadCloser: resp.Body, swap: func() {
+		m, _ := filepath.Glob(filepath.Join(s.dir, ".modelstore-dl-*"))
+		if len(m) != 1 {
+			return
+		}
+		repl := filepath.Join(s.dir, "evil-swap")
+		if os.WriteFile(repl, s.evil, 0o644) == nil {
+			_ = os.Rename(repl, m[0])
+		}
+	}}
+	return resp, nil
+}
+
+func TestFetchExtractsVerifiedBytes(t *testing.T) {
+	good := tarGz(t, member{name: "r/a.txt", body: "good"})
+	evil := tarGz(t, member{name: "r/a.txt", body: "evil"})
+	srv := serve(t, good)
+	dir := t.TempDir()
+	client := &http.Client{Transport: swapTransport{base: srv.Client().Transport, dir: dir, evil: evil}}
+	if client.Transport.(swapTransport).base == nil {
+		client.Transport = swapTransport{base: http.DefaultTransport, dir: dir, evil: evil}
+	}
+	e := Entry{Name: "m", URL: srv.URL + "/m.tar.gz", SHA256: sum(good), Archive: ArchiveTarGz, Files: []File{{Path: "a.txt"}}}
+	if _, err := Fetch(context.Background(), client, e, dir); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "m", "a.txt")); string(b) != "good" {
+		t.Fatalf("extracted %q, not the verified archive", b)
+	}
+}
+
+func TestFetchWriteViaLinkStaysInsideRoot(t *testing.T) {
+	// l is a link to the existing directory sub; the member l/f is written
+	// through it. An escaping link is refused up front (see
+	// TestFetchUnsafeArchive), so the only reachable outcome is a write that
+	// lands inside the model, never beside it.
+	arc := tarGz(t,
+		member{name: "top/sub/", typ: tar.TypeDir},
+		member{name: "top/l", typ: tar.TypeSymlink, link: "sub"},
+		member{name: "top/l/f", body: "x"},
+	)
+	srv := serve(t, arc)
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "store")
+	e := Entry{Name: "m", URL: srv.URL + "/m.tar.gz", SHA256: sum(arc), Archive: ArchiveTarGz}
+	if _, err := Fetch(context.Background(), srv.Client(), e, dir); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "m", "sub", "f")); err != nil || string(b) != "x" {
+		t.Fatalf("sub/f: %q %v", b, err)
+	}
+	for _, p := range []string{filepath.Join(dir, "f"), filepath.Join(parent, "f")} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s written outside the model: %v", p, err)
 		}
 	}
 }

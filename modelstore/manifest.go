@@ -121,6 +121,7 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("%w: unsupported version %d (want %d)", ErrInvalidManifest, m.Version, ManifestVersion)
 	}
 	seen := make(map[string]struct{}, len(m.Models))
+	targets := make(map[string]string, len(m.Models))
 	for i := range m.Models {
 		e := &m.Models[i]
 		if err := e.Validate(); err != nil {
@@ -130,6 +131,11 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("%w: duplicate model name %q", ErrInvalidManifest, e.Name)
 		}
 		seen[e.Name] = struct{}{}
+		t := e.Target("")
+		if other, dup := targets[t]; dup {
+			return fmt.Errorf("%w: models %q and %q install to the same path %q", ErrInvalidManifest, other, e.Name, t)
+		}
+		targets[t] = e.Name
 	}
 	return nil
 }
@@ -146,7 +152,7 @@ func (m *Manifest) Lookup(name string) (Entry, error) {
 
 // Validate checks a single entry.
 func (e *Entry) Validate() error {
-	if e.Name == "" || !filepath.IsLocal(e.Name) || strings.ContainsAny(e.Name, `/\`) {
+	if !validComponent(e.Name) {
 		return fmt.Errorf("%w: invalid model name %q", ErrInvalidManifest, e.Name)
 	}
 	u, err := url.Parse(e.URL)
@@ -169,10 +175,25 @@ func (e *Entry) Validate() error {
 			return fmt.Errorf("%w: model %q: file %q: sha256 must be 64 lowercase hex characters", ErrInvalidManifest, e.Name, f.Path)
 		}
 	}
-	if e.Kind() == ArchiveNone && len(e.Files) > 1 {
-		return fmt.Errorf("%w: model %q: a single-file entry lists %d files", ErrInvalidManifest, e.Name, len(e.Files))
+	if e.Kind() == ArchiveNone {
+		if len(e.Files) > 1 {
+			return fmt.Errorf("%w: model %q: a single-file entry lists %d files", ErrInvalidManifest, e.Name, len(e.Files))
+		}
+		// The install name must be one local path component, so the target
+		// is always a direct child of the store directory.
+		if n := e.singleFileName(); !validComponent(n) {
+			return fmt.Errorf("%w: model %q: single-file install name %q is not a plain file name", ErrInvalidManifest, e.Name, n)
+		}
 	}
 	return nil
+}
+
+// validComponent reports whether s is a single, clean, local path element that
+// is not reserved for Fetch's temporary entries.
+func validComponent(s string) bool {
+	return s != "" && s != "." && s != ".." && s == path.Clean(s) &&
+		filepath.IsLocal(s) && !strings.ContainsAny(s, `/\`) &&
+		!strings.HasPrefix(s, tempPrefix)
 }
 
 // Kind returns the archive kind, treating the empty value as ArchiveNone.
@@ -189,6 +210,8 @@ func (e *Entry) singleFileName() string {
 		return e.Files[0].Path
 	}
 	if u, err := url.Parse(e.URL); err == nil {
+		// "" and "." mean the URL names no file; anything else, including
+		// "..", is returned for Validate to judge.
 		if b := path.Base(u.Path); b != "" && b != "/" && b != "." {
 			return b
 		}
@@ -197,7 +220,8 @@ func (e *Entry) singleFileName() string {
 }
 
 // Target is where Fetch places the entry inside dir: the file itself for
-// ArchiveNone, otherwise a directory named after the entry.
+// ArchiveNone (a single path component, enforced by Validate), otherwise a
+// directory named after the entry.
 func (e *Entry) Target(dir string) string {
 	if e.Kind() == ArchiveNone {
 		return filepath.Join(dir, filepath.FromSlash(e.singleFileName()))
