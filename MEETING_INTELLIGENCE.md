@@ -14,6 +14,7 @@ metrics without re-reading every test first.
 - [Analyzer Contract](#analyzer-contract)
 - [Heuristic Analyzer](#heuristic-analyzer)
 - [Redaction](#redaction)
+- [Consent And Retention](#consent-and-retention)
 - [Export Safety](#export-safety)
 - [Evaluation Package](#evaluation-package)
 - [Error Reference](#error-reference)
@@ -42,7 +43,8 @@ meeting memory.
 | --- | --- | --- |
 | Meeting aggregate | `meeting/meeting.go` | Public meeting, participant, transcript, summary, task, question, and risk types plus timing validation. |
 | Diarized ASR mapping | `meeting/from_diarization.go` | Converts `diarization.IntegratedResult` into `meeting.Meeting` transcript turns. |
-| Exports | `meeting/export.go` | Markdown, product JSON, SRT, and WebVTT export formats plus redaction enforcement. |
+| Consent and retention | `meeting/consent.go` | Consent status and per-participant records, retention policy, deletion-due helpers, and their validation. |
+| Exports | `meeting/export.go`, `meeting/docx.go` | Markdown, product JSON, SRT, WebVTT, and DOCX export formats plus redaction and consent enforcement. |
 | Analyzer contract | `meeting/analyzer.go` | Provider-neutral analyzer interface, request scopes, normalization, and validation. |
 | Reference analyzer | `meeting/heuristic_analyzer.go` | Deterministic local baseline analyzer with no provider or model dependency. |
 | Redaction | `meeting/redaction.go` | Redactor interface, built-in pattern redactor, meeting redaction, and redaction reports. |
@@ -87,6 +89,7 @@ go run ./examples/meeting_intelligence
 - speaker-attributed transcript turns
 - optional generated or reviewed summary artifacts
 - a `Redacted` flag used by export safety checks
+- optional `Consent` and `Retention` metadata (see [Consent And Retention](#consent-and-retention))
 - wall-clock and relative timing
 
 `Meeting.Validate` enforces the structural contract before export, analysis, or
@@ -100,7 +103,7 @@ data because a raw transcript-only meeting is valid.
 2. `ParticipantID`
 3. `SpeakerID`
 
-That label is used by Markdown, SRT, and WebVTT exports.
+That label is used by Markdown, SRT, WebVTT, and DOCX exports.
 
 ## Analyzer Contract
 
@@ -232,6 +235,29 @@ state, retention rule, biometric policy, or free-form PII shape. For stricter
 privacy requirements, add a custom `Redactor` implementation and keep tests for
 the field paths that must be covered.
 
+## Consent And Retention
+
+`Meeting.Consent` and `Meeting.Retention` are optional pointers. When unset they
+are omitted from both the aggregate JSON and the product export JSON, so existing
+output is unchanged.
+
+`Consent` carries a `Status` (`unknown`, `obtained`, `declined`, `withdrawn`; the
+empty value reads as `unknown`), a free-form `Basis`, `ObtainedAt`, and optional
+per-participant `ParticipantConsent` records keyed by `Participant.ID`.
+`Meeting.Validate` rejects unknown statuses, blank or duplicate participant IDs,
+and records that reference participants not in the meeting
+(`ErrInvalidConsent`). `Consent.Obtained(participants)` is true only when the
+meeting-level status is `obtained` and, if per-participant records exist, every
+record is `obtained` and every meeting participant has a record.
+
+`Retention` carries a `Policy` name, either `RetainUntil` or `RetainFor` (mutually
+exclusive, `RetainFor` must not be negative; violations return
+`ErrInvalidRetention`), and a `LegalHold` flag. `Meeting.DeletionDue` returns the
+deadline: `RetainUntil`, or `RetainFor` counted from `EndedAt`, then `StartedAt`,
+then `CreatedAt`. It reports `false` when no deadline can be computed or a legal
+hold applies. `Meeting.IsDeletionDue(now)` is true when `now` is at or after the
+deadline. The package computes the deadline only; it never deletes anything.
+
 ## Export Safety
 
 The original export methods remain backward compatible:
@@ -240,6 +266,7 @@ The original export methods remain backward compatible:
 - `ExportMarkdown`
 - `ExportSRT`
 - `ExportWebVTT`
+- `ExportDOCX`
 
 Each method delegates to a `WithOptions` variant using zero options:
 
@@ -247,9 +274,24 @@ Each method delegates to a `WithOptions` variant using zero options:
 - `ExportMarkdownWithOptions`
 - `ExportSRTWithOptions`
 - `ExportWebVTTWithOptions`
+- `ExportDOCXWithOptions`
 
 `ExportOptions.RequireRedaction` blocks export unless `Meeting.Redacted` is true.
 Blocked exports return `ErrRedactionRequired`.
+
+`ExportOptions.RequireConsent` blocks export unless `Meeting.Consent` is set and
+`Consent.Obtained` holds for the meeting participants. Blocked exports return
+`ErrConsentRequired`. Both options may be combined and apply to every export
+format. Defaults are unchanged: no option, no gating.
+
+`ExportDOCX` returns a minimal WordprocessingML package built with the standard
+library only (`[Content_Types].xml`, `_rels/.rels`, `word/document.xml`). It
+contains the title, metadata (including consent status, retain-until, and legal
+hold when set), summary sections, action items, and the speaker-labelled
+transcript, with the same content rules as Markdown. Text is XML-escaped and
+characters invalid in XML are replaced with U+FFFD. Zip entries carry no
+timestamps, so output is byte-identical for the same meeting. It uses direct run
+formatting rather than a styles part, so styling is intentionally plain.
 
 Caption exports still require positive turn timing. If a transcript turn has
 `EndTime <= StartTime`, SRT and WebVTT export return
@@ -335,6 +377,9 @@ Keep those as additive metrics in `evaluation`; do not push them into
 | `meeting.ErrAnalysisOutputInvalid` | `meeting/analyzer.go` | Analyzer output is nil, empty, invalid, duplicated, or references unknown evidence. |
 | `meeting.ErrRedactorRequired` | `meeting/redaction.go` | Redaction was requested without a redactor. |
 | `meeting.ErrRedactionRequired` | `meeting/export.go` | Export required prior redaction but `Meeting.Redacted` is false. |
+| `meeting.ErrConsentRequired` | `meeting/consent.go` | Export required consent but consent is not obtained. |
+| `meeting.ErrInvalidConsent` | `meeting/consent.go` | Consent status or participant records are invalid. |
+| `meeting.ErrInvalidRetention` | `meeting/consent.go` | Retention duration or deadline fields are invalid. |
 | `meeting.ErrCaptionTimingRequired` | `meeting/export.go` | Caption export saw a turn without positive duration. |
 | `evaluation.ErrReferenceRequired` | `evaluation/evaluation.go` | Evaluation was requested without transcript or summary reference data. |
 | `evaluation.ErrInvalidDuration` | `evaluation/evaluation.go` | Real-time-factor inputs are invalid. |
