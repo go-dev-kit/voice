@@ -241,6 +241,8 @@ func ScoreText(n Normalizer, reference string, hypothesis string) TextReport {
 	hypothesisChars := n.Runes(hypothesis)
 	characterEdits := levenshteinRunes(referenceChars, hypothesisChars)
 
+	substitutions, deletions, insertions := WordErrorBreakdown(referenceWords, hypothesisWords)
+
 	return TextReport{
 		WordErrorRate:      rate(wordEdits, len(referenceWords), len(hypothesisWords)),
 		CharacterErrorRate: rate(characterEdits, len(referenceChars), len(hypothesisChars)),
@@ -248,5 +250,8 @@ func ScoreText(n Normalizer, reference string, hypothesis string) TextReport {
 		ReferenceWords:     len(referenceWords),
 		CharacterEdits:     characterEdits,
 		ReferenceChars:     len(referenceChars),
+		Substitutions:      substitutions,
+		Deletions:          deletions,
+		Insertions:         insertions,
 	}
 }

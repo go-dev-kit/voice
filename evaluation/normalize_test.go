@@ -153,3 +153,10 @@ func TestGermanNormalizerIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestScoreTextReportsErrorBreakdown(t *testing.T) {
+	got := ScoreText(GermanNormalizer(), "nimm 5,6 mg täglich", "nimm 5,8 mg bitte täglich jetzt")
+	if got.Substitutions != 1 || got.Deletions != 0 || got.Insertions != 2 || got.WordEdits != 3 {
+		t.Fatalf("breakdown = S%d D%d I%d edits %d, want S1 D0 I2 edits 3", got.Substitutions, got.Deletions, got.Insertions, got.WordEdits)
+	}
+}
