@@ -395,7 +395,8 @@ Effort: Medium to Large.
 - Add searchable meeting memory.
 - Add workflow integrations and connector adapters.
 - Add realtime voice-agent event protocol.
-- Bridge `testdata/model_matrix.yaml` to `modelstore` manifests.
+- Move verified model artifacts to the shared gdk/ml kit (draft in
+  `internal/modelstore`), then bridge `testdata/model_matrix.yaml` to it.
 
 ## Initial Implementation Slice
 
@@ -453,7 +454,8 @@ dependency, or new model dependency. The developer handoff guide is
   transducer models; `evaluation` German normalizer (numbers, signs, ranges and
   unit symbols kept intact, versioned), `RTFx`, FLEURS/JSONL loaders, word
   error breakdown, and seeded paired bootstrap; meeting consent/retention metadata, `RequireConsent`, and DOCX
-  export; `modelstore` manifest/verify/fetch package and pinned release URLs;
+  export; an internal model manifest/verify/fetch draft (for gdk/ml) and
+  pinned release URLs;
   extreme sample-rate coverage, WAV fuzzing, and two audio fixes; go-hnswlib
   v1.5.0; env-gated real-model benchmarks.
 - Still open: LLM-quality analyzer implementations, export adapters for

@@ -29,13 +29,10 @@ see [MEETING_INTELLIGENCE.md](MEETING_INTELLIGENCE.md).
 Model files are supplied by the caller; [`testdata/model_matrix.yaml`](testdata/model_matrix.yaml)
 records the recommended choices and their sources (sherpa-onnx release URLs are
 pinned where verified; sha256 digests only where the archive was downloaded and
-hashed). To download and verify models from your own code, use the stdlib-only
-`modelstore` package: a JSON manifest of entries (`name`, `family`, `url`,
-`sha256`, `archive`, `files`), `Entry.Verify` for installed files, and
-`modelstore.Fetch`, which verifies the digest before use, extracts tar.gz/tar.bz2
-safely (no absolute paths, traversal, hardlinks, or links that leave the model
-directory; size and member limits) and publishes atomically. Unpinned entries
-need `WithAllowUnpinned()` and report the digest to pin.
+hashed). VoiceKit does not publish a model download/verify API: verified
+model artifacts are planned for the shared gdk/ml kit, and VoiceKit's draft
+(manifest, digest verification, safe extraction) stays in `internal/modelstore`
+until then.
 
 - **Streaming ASR**: NVIDIA Nemotron Speech Streaming 0.6B (RNNT transducer — use
   the online `transducer` family); Zipformer2-CTC / Parakeet as alternatives.

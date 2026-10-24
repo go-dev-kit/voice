@@ -12,7 +12,8 @@
   TSV and JSONL manifest loaders, S/D/I breakdown, paired bootstrap.
 - [x] meeting: consent and retention metadata, DeletionDue, RequireConsent
   export gating, deterministic stdlib DOCX export.
-- [x] modelstore: JSON manifest, digest verification, safe fetch/extract;
+- [x] internal/modelstore draft (for gdk/ml): JSON manifest, digest
+  verification, safe fetch/extract;
   sherpa-onnx release URLs pinned in testdata/model_matrix.yaml; fetch script
   column fix.
 - [x] audio: extreme sample-rate and malformed WAV coverage, FuzzDecodeWAV,
@@ -22,7 +23,8 @@
 - [ ] Quiet-host rerun: first-decode penalty, Whisper auto vs forced,
   transcriber RTF with VAD, HNSW Add path.
 - [ ] pebble: ratchet stores to format 13 on v1.1.5, then move to v2.
-- [ ] Bridge model_matrix.yaml to modelstore manifests; pin remaining digests.
+- [ ] Move internal/modelstore to gdk/ml artifact (DKT-145); bridge
+  model_matrix.yaml; pin remaining digests.
 
 ## ASR streaming correctness sprint (2026-09, COMPLETE — v0.4.0)
 

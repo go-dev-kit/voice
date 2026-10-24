@@ -3,6 +3,10 @@
 // needs in a JSON manifest and uses this package to fetch them with pinned
 // SHA-256 digests and safe archive extraction. The package depends only on the
 // standard library.
+//
+// The package is internal on purpose: verified model artifacts are planned to
+// move into the shared gdk/ml kit (YouTrack DKT-145, decision VCK-7), so
+// VoiceKit does not publish it as API.
 package modelstore
 
 import (

@@ -13,9 +13,9 @@
 #
 # Archives (.tar.bz2 / .tar.gz) are extracted into the entry directory after the
 # digest check and the archive file is removed. GNU tar and bsdtar both refuse
-# absolute paths and ".." members by default. Go consumers that need streaming
-# size limits and symlink checks should use the go.glpx.pro/gdk/voice/modelstore
-# package instead of this test-only script.
+# absolute paths and ".." members by default. This script is test-only; a
+# verified-artifact library with size limits and symlink checks is planned for
+# the shared gdk/ml kit (VoiceKit keeps its draft in internal/modelstore).
 #
 # Usage:
 #   make fetch-test-models
