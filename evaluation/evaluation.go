@@ -96,27 +96,16 @@ func EvaluateMeeting(reference MeetingReference, prediction meeting.Meeting) (Re
 	return report, nil
 }
 
-// EvaluateTranscriptText scores predicted transcript text against reference text.
+// EvaluateTranscriptText scores predicted transcript text against reference text
+// with the default normalizer.
 func EvaluateTranscriptText(reference []ReferenceTurn, prediction []meeting.TranscriptTurn) TextReport {
-	referenceText := referenceTranscriptText(reference)
-	predictionText := predictionTranscriptText(prediction)
+	return EvaluateTranscriptTextWith(DefaultNormalizer(), reference, prediction)
+}
 
-	referenceWords := normalizeWords(referenceText)
-	predictionWords := normalizeWords(predictionText)
-	wordEdits := levenshteinStrings(referenceWords, predictionWords)
-
-	referenceChars := normalizeRunes(referenceText)
-	predictionChars := normalizeRunes(predictionText)
-	characterEdits := levenshteinRunes(referenceChars, predictionChars)
-
-	return TextReport{
-		WordErrorRate:      rate(wordEdits, len(referenceWords), len(predictionWords)),
-		CharacterErrorRate: rate(characterEdits, len(referenceChars), len(predictionChars)),
-		WordEdits:          wordEdits,
-		ReferenceWords:     len(referenceWords),
-		CharacterEdits:     characterEdits,
-		ReferenceChars:     len(referenceChars),
-	}
+// EvaluateTranscriptTextWith is EvaluateTranscriptText with an explicit
+// normalizer, for example GermanNormalizer.
+func EvaluateTranscriptTextWith(n Normalizer, reference []ReferenceTurn, prediction []meeting.TranscriptTurn) TextReport {
+	return ScoreText(n, referenceTranscriptText(reference), predictionTranscriptText(prediction))
 }
 
 // EvaluateSpeakerAttribution scores turn-level speaker assignment.
@@ -177,12 +166,28 @@ func EvaluateActionItems(reference []meeting.ActionItem, prediction []meeting.Ac
 	return report
 }
 
-// RealTimeFactor returns processing duration divided by audio duration.
+// RealTimeFactor returns processing wall time divided by audio duration
+// (RTF). Values below 1 are faster than real time; 0.1 means one second of
+// audio took 100ms to process. A zero processing duration yields 0. It
+// returns ErrInvalidDuration for a negative processing duration or a
+// non-positive audio duration. RTFx is the inverse.
 func RealTimeFactor(processingDuration time.Duration, audioDuration time.Duration) (float64, error) {
 	if processingDuration < 0 || audioDuration <= 0 {
 		return 0, ErrInvalidDuration
 	}
 	return processingDuration.Seconds() / audioDuration.Seconds(), nil
+}
+
+// RTFx returns audio seconds processed per processing second, the inverse of
+// RealTimeFactor. Values above 1 are faster than real time. Unlike
+// RealTimeFactor it also rejects a zero processing duration, because the
+// ratio is unbounded there; both durations must be positive or it returns
+// ErrInvalidDuration.
+func RTFx(processingDuration time.Duration, audioDuration time.Duration) (float64, error) {
+	if processingDuration <= 0 || audioDuration <= 0 {
+		return 0, ErrInvalidDuration
+	}
+	return audioDuration.Seconds() / processingDuration.Seconds(), nil
 }
 
 // EvaluateRealTimeFactor stores a real-time factor in an existing report.
@@ -225,22 +230,6 @@ func actionItemSet(items []meeting.ActionItem) map[string]struct{} {
 		set[text] = struct{}{}
 	}
 	return set
-}
-
-func normalizeWords(text string) []string {
-	text = normalizeComparableText(text)
-	if text == "" {
-		return nil
-	}
-	return strings.Fields(text)
-}
-
-func normalizeRunes(text string) []rune {
-	text = normalizeComparableText(text)
-	if text == "" {
-		return nil
-	}
-	return []rune(text)
 }
 
 func normalizeComparableText(text string) string {
