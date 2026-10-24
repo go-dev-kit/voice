@@ -348,6 +348,9 @@ func (c *Converter) decodePCM(data []byte, config *AudioConfig) ([]float32, erro
 
 // encodeWAV encodes to WAV format (simplified implementation)
 func (c *Converter) encodeWAV(samples []float32, config *AudioConfig) ([]byte, error) {
+	if dataSize := len(samples) * config.GetBytesPerSample(); !wavDataSizeFits(dataSize) {
+		return nil, fmt.Errorf("WAV data of %d bytes exceeds the 4 GiB RIFF size limit", dataSize)
+	}
 	pcmData, err := c.encodePCM(samples, config)
 	if err != nil {
 		return nil, err
@@ -356,6 +359,12 @@ func (c *Converter) encodeWAV(samples []float32, config *AudioConfig) ([]byte, e
 	// Create WAV header
 	header := c.createWAVHeader(len(pcmData), config)
 	return append(header, pcmData...), nil
+}
+
+// wavDataSizeFits reports whether a data chunk of dataSize bytes fits the
+// 32-bit RIFF size fields, which also count the 36 header bytes after them.
+func wavDataSizeFits(dataSize int) bool {
+	return dataSize >= 0 && uint64(dataSize) <= math.MaxUint32-36
 }
 
 // createWAVHeader creates a WAV file header

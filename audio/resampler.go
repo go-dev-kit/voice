@@ -228,6 +228,10 @@ func resampleWindowedSinc(input []float32, ratio float64, outputLength, halfTaps
 		}
 		if weights != 0 {
 			output[i] = float32(sum / weights)
+		} else {
+			// The pooled buffer may hold stale data, so every sample must
+			// be written; fall back to the nearest input sample.
+			output[i] = input[clamp(int(math.Round(center)), 0, last)]
 		}
 	}
 	return output
