@@ -17,10 +17,12 @@ type Normalizer struct {
 
 	// SplitHyphens makes the German profile split hyphenated compounds
 	// ("Wolfs-Rudel" becomes "wolfs rudel") instead of joining them
-	// ("wolfsrudel"). Ignored by the default profile, which always splits.
+	// ("wolfsrudel"). It has no effect on the zero (default) Normalizer,
+	// which always splits and ignores this field; use GermanNormalizer.
 	SplitHyphens bool
 	// KeepEszett keeps "ß" instead of folding it to "ss" in the German
-	// profile. Ignored by the default profile.
+	// profile. It has no effect on the zero (default) Normalizer, which
+	// ignores this field; use GermanNormalizer.
 	KeepEszett bool
 }
 

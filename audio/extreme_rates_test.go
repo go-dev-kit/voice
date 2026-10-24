@@ -8,7 +8,7 @@ import (
 
 var extremeRates = []int{4000, 6000, 8000, 11025, 22050, 44100, 48000, 96000, 192000, 384000}
 
-// finite reports the first NaN or Inf index, or -1.
+// firstNonFinite reports the index of the first NaN or Inf sample, or -1.
 func firstNonFinite(x []float32) int {
 	for i, v := range x {
 		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
@@ -201,6 +201,23 @@ func TestDecodedMonoOddLengthInterleaved(t *testing.T) {
 	}
 }
 
+// assertPCM16Audible checks that little-endian 16-bit PCM carries signal:
+// a converted 0.5-amplitude sine must not come back silent or clipped flat.
+func assertPCM16Audible(t *testing.T, data []byte) {
+	t.Helper()
+	var peak int
+	for i := 0; i+1 < len(data); i += 2 {
+		v := int(int16(uint16(data[i]) | uint16(data[i+1])<<8))
+		if v < 0 {
+			v = -v
+		}
+		peak = max(peak, v)
+	}
+	if peak < 1000 {
+		t.Fatalf("peak %d of 32768, converted sine is near silent", peak)
+	}
+}
+
 func TestConvertAudioExtremeRates(t *testing.T) {
 	conv, err := NewConverter(&ConverterConfig{EnableResampling: true, TargetRMS: 0.1, TempBufferSize: 8192, NormalizeFactor: 32768})
 	if err != nil {
@@ -228,6 +245,7 @@ func TestConvertAudioExtremeRates(t *testing.T) {
 					if want := expectedResampleLen(n, src, dst) * ch * 2; len(data) != want {
 						t.Fatalf("bytes = %d, want %d", len(data), want)
 					}
+					assertPCM16Audible(t, data)
 				})
 			}
 		}
@@ -255,6 +273,18 @@ func TestConvertAudioShortInputs(t *testing.T) {
 				if len(data) < 44 {
 					t.Fatalf("output %d bytes, shorter than a WAV header", len(data))
 				}
+				d, err := Decode(data, FormatWAV, DecodeLimits{})
+				if err != nil {
+					t.Fatalf("decode output: %v", err)
+				}
+				if i := firstNonFinite(d.Samples); i >= 0 {
+					t.Fatalf("non-finite sample at %d", i)
+				}
+				for i, v := range d.Samples {
+					if math.Abs(float64(v)) > 1 {
+						t.Fatalf("sample %d = %v out of range", i, v)
+					}
+				}
 			})
 		}
 	}
@@ -276,38 +306,72 @@ func TestCreateWAVHeaderLargeValues(t *testing.T) {
 
 func TestDecodeWAVMalformedHeaders(t *testing.T) {
 	payload := pcmBytes([]float64{0.1, 0.2, 0.3, 0.4}, 16)
-	cases := map[string][]byte{
+	// Rejected cases must fail Decode. Accepted cases decode the four payload
+	// samples (a data length beyond the input is clamped to the bytes present)
+	// and differ only in what Mono(16000) does with the header values.
+	rejected := map[string][]byte{
 		"zero rate":     buildWAV(wavSpec{tag: wavFormatPCM, channels: 1, rate: 0, bits: 16}, payload),
 		"zero channels": buildWAV(wavSpec{tag: wavFormatPCM, channels: 0, rate: 16000, bits: 16}, payload),
 		"zero bits":     buildWAV(wavSpec{tag: wavFormatPCM, channels: 1, rate: 16000, bits: 0}, payload),
 		"odd bits":      buildWAV(wavSpec{tag: wavFormatPCM, channels: 1, rate: 16000, bits: 12}, payload),
-		"huge rate":     buildWAV(wavSpec{tag: wavFormatPCM, channels: 1, rate: math.MaxInt32, bits: 16}, payload),
-		"huge channels": buildWAV(wavSpec{tag: wavFormatPCM, channels: 65535, rate: 16000, bits: 16}, payload),
-		"huge data":     buildWAVClaiming(wavSpec{tag: wavFormatPCM, channels: 1, rate: 16000, bits: 16}, payload, 0xFFFFFFF0),
 		"unknown tag":   buildWAV(wavSpec{tag: 0x55, channels: 1, rate: 16000, bits: 16}, payload),
 		"header only":   buildWAV(wavSpec{tag: wavFormatPCM, channels: 1, rate: 16000, bits: 16}, nil)[:20],
 		"riff only":     []byte("RIFF\x00\x00\x00\x00WAVE"),
 	}
-	for name, data := range cases {
+	for name, data := range rejected {
 		t.Run(name, func(t *testing.T) {
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						t.Fatalf("panic: %v", r)
-					}
-				}()
-				d, err := Decode(data, FormatWAV, DecodeLimits{})
-				if err == nil && name != "huge data" && name != "huge rate" && name != "huge channels" {
-					t.Fatalf("expected error, got %+v", d)
-				}
-				if d != nil {
-					if _, err := d.Mono(16000); err != nil {
-						return
-					}
-				}
-			}()
+			d, err := Decode(data, FormatWAV, DecodeLimits{})
+			if err == nil {
+				t.Fatalf("expected error, got %+v", d)
+			}
 		})
 	}
+
+	t.Run("huge data", func(t *testing.T) {
+		data := buildWAVClaiming(wavSpec{tag: wavFormatPCM, channels: 1, rate: 16000, bits: 16}, payload, 0xFFFFFFF0)
+		d, err := Decode(data, FormatWAV, DecodeLimits{})
+		if err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		if d.SampleRate != 16000 || d.Channels != 1 || len(d.Samples) != 4 {
+			t.Fatalf("got %d Hz, %d ch, %d samples; want 16000 Hz, 1 ch, 4 samples", d.SampleRate, d.Channels, len(d.Samples))
+		}
+	})
+
+	t.Run("huge rate", func(t *testing.T) {
+		data := buildWAV(wavSpec{tag: wavFormatPCM, channels: 1, rate: math.MaxInt32, bits: 16}, payload)
+		d, err := Decode(data, FormatWAV, DecodeLimits{})
+		if err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		if d.SampleRate != math.MaxInt32 || len(d.Samples) != 4 {
+			t.Fatalf("got %d Hz, %d samples; want %d Hz, 4 samples", d.SampleRate, len(d.Samples), math.MaxInt32)
+		}
+		// The rate is outside the resampler range: Mono reports it, never panics.
+		if _, err := d.Mono(16000); err == nil {
+			t.Fatal("Mono accepted a rate outside the resampler range")
+		}
+	})
+
+	t.Run("huge channels", func(t *testing.T) {
+		data := buildWAV(wavSpec{tag: wavFormatPCM, channels: 65535, rate: 16000, bits: 16}, payload)
+		d, err := Decode(data, FormatWAV, DecodeLimits{})
+		if err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		if d.Channels != 65535 || len(d.Samples) != 4 {
+			t.Fatalf("got %d ch, %d samples; want 65535 ch, 4 samples", d.Channels, len(d.Samples))
+		}
+		// Four samples are less than one 65535-channel frame, so Mono drops
+		// the partial frame and returns no audio without an error.
+		out, err := d.Mono(16000)
+		if err != nil {
+			t.Fatalf("Mono: %v", err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("Mono returned %d samples, want 0", len(out))
+		}
+	})
 }
 
 func FuzzDecodeWAV(f *testing.F) {
