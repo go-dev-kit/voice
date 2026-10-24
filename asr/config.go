@@ -72,7 +72,7 @@ type OnlineConfig struct {
 	// ":score". HotwordsText is the same content in memory, one phrase per
 	// line; set at most one of the two. HotwordsScore is the default boost
 	// (zero keeps Sherpa's 1.5). Both require Config.DecodingMethod
-	// modified_beam_search. ModelingUnit (cjkchar, bpe, bbpe, cjkchar+bpe;
+	// modified_beam_search. ModelingUnit (cjkchar, bpe, cjkchar+bpe;
 	// empty means cjkchar) must match how the model's tokens.txt splits
 	// words, and the bpe units need BpeVocab, the BPE vocabulary file.
 	HotwordsFile  string  `json:"hotwords_file,omitempty"`
