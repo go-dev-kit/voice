@@ -66,6 +66,20 @@ type OnlineConfig struct {
 	JoinerPath  string `json:"joiner_path"`
 	ModelPath   string `json:"model_path"`
 	ModelType   string `json:"model_type"`
+
+	// Contextual biasing, transducer models only; see validateHotwords.
+	// HotwordsFile holds one phrase per line, each optionally followed by
+	// ":score". HotwordsText is the same content in memory, one phrase per
+	// line; set at most one of the two. HotwordsScore is the default boost
+	// (zero keeps Sherpa's 1.5). Both require Config.DecodingMethod
+	// modified_beam_search. ModelingUnit (cjkchar, bpe, bbpe, cjkchar+bpe;
+	// empty means cjkchar) must match how the model's tokens.txt splits
+	// words, and the bpe units need BpeVocab, the BPE vocabulary file.
+	HotwordsFile  string  `json:"hotwords_file,omitempty"`
+	HotwordsText  string  `json:"hotwords_text,omitempty"`
+	HotwordsScore float32 `json:"hotwords_score,omitempty"`
+	ModelingUnit  string  `json:"modeling_unit,omitempty"`
+	BpeVocab      string  `json:"bpe_vocab,omitempty"`
 }
 
 // OfflineConfig owns Sherpa offline/batch model paths and family-specific options.
@@ -118,6 +132,17 @@ type OfflineConfig struct {
 	TopP         float32 `json:"top_p,omitempty"`
 	Seed         int     `json:"seed,omitempty"`
 	Hotwords     string  `json:"hotwords,omitempty"`
+
+	// Recognizer-level contextual biasing for the transducer family (icefall
+	// and NeMo, including Parakeet TDT). Unlike Hotwords, the FunASR-nano and
+	// Qwen3 prompt field above, these take a Sherpa hotwords file: one phrase
+	// per line, each optionally followed by ":score". They require
+	// Config.DecodingMethod modified_beam_search. See OnlineConfig for the
+	// field semantics.
+	HotwordsFile  string  `json:"hotwords_file,omitempty"`
+	HotwordsScore float32 `json:"hotwords_score,omitempty"`
+	ModelingUnit  string  `json:"modeling_unit,omitempty"`
+	BpeVocab      string  `json:"bpe_vocab,omitempty"`
 
 	// MaxDecodeSeconds makes one SherpaOfflineModel decode refuse longer input
 	// with an *AudioTooLongError instead of letting the model truncate it.
@@ -452,7 +477,8 @@ func (c *Config) validateVAD() []error {
 }
 
 func (c *Config) validateOnline() []error {
-	return validateOnlineConfigPaths("online", c.Online)
+	return append(validateOnlineConfigPaths("online", c.Online),
+		validateHotwords("online", c.DecodingMethod, c.Online.hasTransducerPaths(), c.Online.hotwords())...)
 }
 
 // validateOnlineModels validates every Config.OnlineModels entry: each must
@@ -473,6 +499,7 @@ func (c *Config) validateOnlineModels() []error {
 			label = fmt.Sprintf("online model %q", oc.Name)
 		}
 		errs = append(errs, validateOnlineConfigPaths(label, oc)...)
+		errs = append(errs, validateHotwords(label, c.DecodingMethod, oc.hasTransducerPaths(), oc.hotwords())...)
 	}
 	return errs
 }
@@ -535,6 +562,7 @@ func (c *Config) validateOffline() []error {
 	if offline.ModelFamily == OfflineFamilyWhisper {
 		errs = append(errs, validateWhisperOptions(offline)...)
 	}
+	errs = append(errs, validateHotwords("offline "+offline.ModelFamily, c.DecodingMethod, offline.ModelFamily == OfflineFamilyTransducer, offline.hotwords())...)
 	if offline.MaxConcurrentDecodes < 0 {
 		errs = append(errs, fmt.Errorf("offline max concurrent decodes must not be negative, got %d", offline.MaxConcurrentDecodes))
 	}
