@@ -159,14 +159,15 @@ func (m *Manager) extractEmbeddingsConcurrent(audioSegments [][]float32, sampleR
 	var wg sync.WaitGroup
 	errChan := make(chan error, numSegments)
 
-	// Process segments concurrently
+	// Process segments concurrently. The semaphore is acquired before the
+	// spawn, so at most maxGoroutines goroutines exist at once; spawning
+	// first and acquiring inside would park one goroutine per segment for a
+	// large batch before any of them runs.
 	for i, audioData := range audioSegments {
+		semaphore <- struct{}{}
 		wg.Add(1)
 		go func(index int, data []float32) {
 			defer wg.Done()
-
-			// Acquire semaphore
-			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
 			embedding, err := m.extractEmbedding(context.Background(), data, sampleRate)

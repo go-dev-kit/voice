@@ -97,3 +97,28 @@ func TestAudioBufferAppendAfterOversizedChunkWrapsWriteIndex(t *testing.T) {
 		t.Fatalf("recent chunk = %v, want %v", got, want)
 	}
 }
+
+// BenchmarkAudioBufferAppend measures the ring-buffer write path that runs
+// once per streamed audio chunk (see AudioBuffer.Append). The chunk size
+// matches the streaming service default; capacity is a power of two so the
+// wrap falls mid-chunk, exercising both contiguous runs of the copy.
+func BenchmarkAudioBufferAppend(b *testing.B) {
+	config := &types.StreamingConfig{
+		ChunkSize:   1024,
+		OverlapSize: 64,
+		BufferSize:  8192,
+		SampleRate:  16000,
+	}
+	buffer := NewAudioBuffer(config)
+	chunk := make([]float32, 1024)
+	for i := range chunk {
+		chunk[i] = float32(i) / 1024
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if err := buffer.Append(chunk); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

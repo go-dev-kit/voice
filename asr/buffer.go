@@ -70,11 +70,16 @@ func (b *AudioBuffer) Append(audio []float32) error {
 		b.size -= removeCount
 	}
 
-	// Copy data into circular buffer
-	for i := 0; i < audioLen; i++ {
-		b.buffer[b.writeIdx] = audio[i]
-		b.writeIdx = (b.writeIdx + 1) % b.capacity
+	// Copy data into the circular buffer in at most two contiguous runs:
+	// up to the physical end of the backing array, then the wrapped rest.
+	// audioLen is never greater than capacity here, so two runs always
+	// cover the chunk.
+	first := min(audioLen, b.capacity-b.writeIdx)
+	copy(b.buffer[b.writeIdx:], audio[:first])
+	if rest := audioLen - first; rest > 0 {
+		copy(b.buffer, audio[first:])
 	}
+	b.writeIdx = (b.writeIdx + audioLen) % b.capacity
 	b.size += audioLen
 
 	return nil

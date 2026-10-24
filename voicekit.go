@@ -25,10 +25,13 @@ type VoiceKit struct {
 	audioResampler *audio.Resampler
 	diarizationMgr *diarization.Manager
 	asrService     ASRService
-	transcriber    types.Transcriber
-	synthesizer    types.SpeechSynthesizer
-	denoiser       types.SpeechDenoiser
-	metrics        *MetricsCollector
+	// asrMu guards asrService, which has a public setter that may run
+	// concurrently with ASR and closeComponents.
+	asrMu       sync.RWMutex
+	transcriber types.Transcriber
+	synthesizer types.SpeechSynthesizer
+	denoiser    types.SpeechDenoiser
+	metrics     *MetricsCollector
 
 	closeOnce sync.Once
 	closeErr  error
@@ -206,8 +209,8 @@ func (vk *VoiceKit) closeComponents() error {
 	if vk.speakerManager != nil {
 		vk.speakerManager.Close()
 	}
-	if vk.asrService != nil {
-		if err := vk.asrService.Close(); err != nil {
+	if svc := vk.asrSnapshot(); svc != nil {
+		if err := svc.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("ASR service close failed: %w", err))
 		}
 	}
@@ -259,6 +262,15 @@ func (vk *VoiceKit) Metrics() *MetricsCollector {
 
 // ASR returns the ASR service
 func (vk *VoiceKit) ASR() ASRService {
+	return vk.asrSnapshot()
+}
+
+// asrSnapshot reads asrService under its lock. The returned service is
+// shared: a SetASRService after this call swaps the stored value but does
+// not close the returned one.
+func (vk *VoiceKit) asrSnapshot() ASRService {
+	vk.asrMu.RLock()
+	defer vk.asrMu.RUnlock()
 	return vk.asrService
 }
 
@@ -272,13 +284,23 @@ func (vk *VoiceKit) Synthesizer() types.SpeechSynthesizer {
 	return vk.synthesizer
 }
 
-// SetASRService sets the ASR service (used to avoid circular imports)
+// SetASRService sets the ASR service (used to avoid circular imports).
+// Safe to call concurrently with ASR and Close: readers observe either the
+// old or the new service, never a torn value. Closing a replaced service
+// remains the caller's responsibility.
 func (vk *VoiceKit) SetASRService(service ASRService) {
+	vk.asrMu.Lock()
+	defer vk.asrMu.Unlock()
 	vk.asrService = service
 }
 
 // ProcessAudio processes audio data through the full voice pipeline
-// This is a convenience method that combines audio conversion, speaker recognition, and diarization
+// This is a convenience method that combines audio conversion, speaker recognition, and diarization.
+//
+// The method takes no context.Context, so a call cannot be cancelled once
+// started: internal stages run against context.Background and run to
+// completion (or first error). Keep inputs bounded or use the stage APIs
+// (Speaker.Identify, diarization.Manager) directly when cancellation matters.
 func (vk *VoiceKit) ProcessAudio(audioData []byte, inputConfig *audio.AudioConfig, sessionID string) (*speaker.IdentifyResult, *diarization.DiarizationResult, error) {
 	if len(audioData) == 0 {
 		return nil, nil, fmt.Errorf("audioData cannot be empty")
