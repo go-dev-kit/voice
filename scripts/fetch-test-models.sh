@@ -11,6 +11,12 @@
 # the tracked file). If `sha256` is set, the download is verified and a mismatch
 # fails the run.
 #
+# Archives (.tar.bz2 / .tar.gz) are extracted into the entry directory after the
+# digest check and the archive file is removed. GNU tar and bsdtar both refuse
+# absolute paths and ".." members by default. Go consumers that need streaming
+# size limits and symlink checks should use the go.glpx.pro/gdk/voice/modelstore
+# package instead of this test-only script.
+#
 # Usage:
 #   make fetch-test-models
 #   VK_TEST_MODEL_DIR=/path/to/models scripts/fetch-test-models.sh
@@ -45,7 +51,8 @@ sha256_of() {
 }
 
 # Flatten every model entry (including the nested diarization/speaker lists) into
-# TSV: section, id, hf, url, sha256.
+# TSV: section, id, hf, url, sha256. Empty fields are emitted as "-" because
+# `read` with a tab IFS collapses consecutive tabs and would shift the columns.
 entries="$(yq '
   [
     (.asr_offline.models[] | .section = "asr_offline"),
@@ -56,7 +63,7 @@ entries="$(yq '
     (.diarization.embedding[]    | .section = "diarization.embedding"),
     (.speaker.embedding[]        | .section = "speaker.embedding")
   ] | .[]
-  | [.section, (.key // .family // .provider // .hf // "unknown"), (.hf // ""), (.url // ""), (.sha256 // "")] | @tsv
+  | [.section, (.key // .family // .provider // .hf // "unknown"), ((.hf | select(length > 0)) // "-"), ((.url | select(length > 0)) // "-"), ((.sha256 | select(length > 0)) // "-")] | @tsv
 ' "$MATRIX")"
 
 fetched=0
@@ -73,6 +80,10 @@ echo
 while IFS=$'\t' read -r section id hf url want_sha; do
 	[ -z "${section:-}" ] && continue
 	label="${section}/${id}"
+	# yq emits "" as "-" (see above); a literal "null" is also treated as empty.
+	[ "$hf" = "-" ] && hf=""
+	[ "$url" = "-" ] && url=""
+	[ "$want_sha" = "-" ] && want_sha=""
 
 	if [ -z "$url" ] || [ "$url" = "null" ]; then
 		echo "SKIP  $label — no url pinned in matrix (hf: ${hf:-none})"
@@ -114,6 +125,17 @@ while IFS=$'\t' read -r section id hf url want_sha; do
 	fi
 
 	mv "$tmp" "$target"
+	case "$filename" in
+	*.tar.bz2 | *.tar.gz | *.tgz)
+		if tar -xf "$target" -C "$target_dir"; then
+			rm -f "$target"
+		else
+			echo "FAIL  $label — could not extract $filename" >&2
+			failed=$((failed + 1))
+			continue
+		fi
+		;;
+	esac
 	fetched=$((fetched + 1))
 done <<<"$entries"
 
