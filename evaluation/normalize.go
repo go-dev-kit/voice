@@ -48,12 +48,30 @@ func DefaultNormalizer() Normalizer { return Normalizer{} }
 //  4. delete apostrophe look-alikes (' ’ ʼ ´ `) so "hab's" is one token "habs";
 //  5. delete hyphens (- U+2010 U+2011) joining a compound, or turn them into
 //     a space when SplitHyphens is set; en and em dashes always separate;
-//  6. every other rune that is not a letter, digit or combining mark,
+//  6. numbers stay whole: a "," "." or ":" between digits is kept as ","
+//     ("5,6" "5.6" all become "5,6"; "12:30" and "12.30" both "12,30";
+//     "1.000" becomes "1,000", so thousands and decimal forms can collide),
+//     a "-" or U+2212 starting a token before a digit is kept as a sign
+//     ("-5"), and a hyphen between digits separates a range ("5-10" is
+//     "5 10", never "510");
+//  7. "%", "‰" and "°" become their own token, so "2,5%" equals "2,5 %";
+//  8. every other rune that is not a letter, digit or combining mark,
 //     including the German quotes „ “ ” ‚ ‘ and » «, becomes a space;
-//  7. whitespace collapses to single spaces and the result is trimmed.
+//  9. whitespace collapses to single spaces and the result is trimmed.
 //
-// Numbers are not verbalized: "3" and "drei" stay different tokens.
+// Numbers are not verbalized: "3" and "drei" stay different tokens. Scores
+// are only comparable when produced by the same Version.
 func GermanNormalizer() Normalizer { return Normalizer{profile: profileGerman} }
+
+// Version identifies the normalization rules. Record it next to every score:
+// a rule change bumps it, and scores from different versions must not be
+// compared.
+func (n Normalizer) Version() string {
+	if n.profile == profileGerman {
+		return "german/1"
+	}
+	return "default/1"
+}
 
 // Normalize returns the canonical comparable form of text.
 func (n Normalizer) Normalize(text string) string {
@@ -82,20 +100,26 @@ func (n Normalizer) Runes(text string) []rune {
 }
 
 func (n Normalizer) normalizeGerman(text string) string {
-	text = composeUmlauts(strings.TrimSpace(text))
-	text = strings.ToLower(text)
+	runes := []rune(strings.ToLower(composeUmlauts(strings.TrimSpace(text))))
 
 	var b strings.Builder
 	b.Grow(len(text))
 	pendingSpace := false
+	lastDigit := false // the last rune written was a digit, with no break since
 	write := func(r rune) {
 		if pendingSpace && b.Len() > 0 {
 			b.WriteByte(' ')
 		}
 		pendingSpace = false
 		b.WriteRune(r)
+		lastDigit = unicode.IsDigit(r)
 	}
-	for _, r := range text {
+	brk := func() {
+		pendingSpace = true
+		lastDigit = false
+	}
+	nextIsDigit := func(i int) bool { return i+1 < len(runes) && unicode.IsDigit(runes[i+1]) }
+	for i, r := range runes {
 		switch {
 		case r == 'ß':
 			if n.KeepEszett {
@@ -104,19 +128,43 @@ func (n Normalizer) normalizeGerman(text string) string {
 				write('s')
 				write('s')
 			}
+		case isNumberSeparator(r) && lastDigit && !pendingSpace && nextIsDigit(i):
+			// "5,6", "5.6", "12:30" and "12.30" are one number token.
+			write(',')
+		case isMinus(r) && (b.Len() == 0 || pendingSpace) && nextIsDigit(i):
+			// A sign at the start of a token: "-5" keeps its sign.
+			write('-')
+		case isGermanHyphen(r) && lastDigit && !pendingSpace && nextIsDigit(i):
+			// A range "5-10" must not glue into "510".
+			brk()
 		case isGermanApostrophe(r):
 		case isGermanHyphen(r):
 			if n.SplitHyphens {
-				pendingSpace = true
+				brk()
 			}
+		case isUnitSymbol(r):
+			// "2,5%" and "2,5 %" agree: the symbol is its own token.
+			brk()
+			write(r)
+			brk()
 		case unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsMark(r):
 			write(r)
 		default:
-			pendingSpace = true
+			brk()
 		}
 	}
 	return b.String()
 }
+
+// isNumberSeparator reports the decimal, thousands and clock separators that
+// stay inside a number token in the German profile.
+func isNumberSeparator(r rune) bool { return r == ',' || r == '.' || r == ':' }
+
+func isMinus(r rune) bool { return r == '-' || r == '−' }
+
+// isUnitSymbol reports symbols kept as their own token in the German profile
+// because they change the meaning of the number before them.
+func isUnitSymbol(r rune) bool { return r == '%' || r == '‰' || r == '°' }
 
 func isGermanApostrophe(r rune) bool {
 	switch r {
