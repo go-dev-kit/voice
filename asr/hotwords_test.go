@@ -261,6 +261,16 @@ func TestValidateHotwordsRefuses(t *testing.T) {
 			c.Offline.HotwordsFile, c.Offline.ModelingUnit = hw, "word"
 			return c
 		}, `modeling unit "word" is not one of`},
+		{"bbpe is unsupported by sherpa and drops hotwords", func(t *testing.T) Config {
+			c := offlineHotwordsConfig(t)
+			c.Offline.HotwordsFile, c.Offline.ModelingUnit, c.Offline.BpeVocab = hw, "bbpe", hw
+			return c
+		}, `modeling unit "bbpe" is not one of`},
+		{"NUL in hotwords text", func(t *testing.T) Config {
+			c := onlineHotwordsConfig(t)
+			c.Online.HotwordsText = "alpha\x00beta"
+			return c
+		}, "NUL byte"},
 		{"bpe without vocab dereferences null", func(t *testing.T) Config {
 			c := offlineHotwordsConfig(t)
 			c.Offline.HotwordsFile, c.Offline.ModelingUnit = hw, "bpe"

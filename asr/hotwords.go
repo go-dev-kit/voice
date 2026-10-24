@@ -8,12 +8,12 @@ import (
 
 const decodingModifiedBeamSearch = "modified_beam_search"
 
-// Sherpa modeling units that tokenize hotwords. cjkchar is Sherpa's default
-// when none is given.
+// Sherpa modeling units that tokenize hotwords (v1.13.8 knows exactly these;
+// byte-level "bbpe" is not among them and silently drops hotwords). cjkchar is
+// Sherpa's default when none is given.
 const (
 	modelingUnitCJKChar    = "cjkchar"
 	modelingUnitBPE        = "bpe"
-	modelingUnitByteBPE    = "bbpe"
 	modelingUnitCJKCharBPE = "cjkchar+bpe"
 )
 
@@ -56,6 +56,9 @@ func validateHotwords(label, decodingMethod string, transducer bool, hw hotwords
 	if hw.file != "" && hw.text != "" {
 		errs = append(errs, fmt.Errorf("%s sets both a hotwords file and hotwords text; Sherpa would ignore the file", label))
 	}
+	if strings.ContainsRune(hw.text, 0) {
+		errs = append(errs, fmt.Errorf("%s hotwords text contains a NUL byte; the C binding would truncate it", label))
+	}
 	if hw.text != "" && strings.TrimSpace(hw.text) == "" {
 		errs = append(errs, fmt.Errorf("%s hotwords text is blank", label))
 	}
@@ -74,11 +77,11 @@ func validateHotwords(label, decodingMethod string, transducer bool, hw hotwords
 	needsVocab := false
 	switch hw.modelingUnit {
 	case "", modelingUnitCJKChar:
-	case modelingUnitBPE, modelingUnitByteBPE, modelingUnitCJKCharBPE:
+	case modelingUnitBPE, modelingUnitCJKCharBPE:
 		needsVocab = true
 	default:
-		errs = append(errs, fmt.Errorf("%s modeling unit %q is not one of %s, %s, %s, %s", label, hw.modelingUnit,
-			modelingUnitCJKChar, modelingUnitBPE, modelingUnitByteBPE, modelingUnitCJKCharBPE))
+		errs = append(errs, fmt.Errorf("%s modeling unit %q is not one of %s, %s, %s", label, hw.modelingUnit,
+			modelingUnitCJKChar, modelingUnitBPE, modelingUnitCJKCharBPE))
 	}
 	switch {
 	case hw.bpeVocab != "":
