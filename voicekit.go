@@ -297,7 +297,7 @@ func (vk *VoiceKit) SetASRService(service ASRService) {
 // ProcessAudio processes audio data through the full voice pipeline
 // This is a convenience method that combines audio conversion, speaker recognition, and diarization.
 //
-// The method takes no context.Context, so a call cannot be cancelled once
+// The method takes no context.Context, so a call cannot be canceled once
 // started: internal stages run against context.Background and run to
 // completion (or first error). Keep inputs bounded or use the stage APIs
 // (Speaker.Identify, diarization.Manager) directly when cancellation matters.
