@@ -114,7 +114,7 @@ func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, op
 	// MkdirAll does not tighten a directory that already exists with looser
 	// permissions; enforce the mode the store contract promises.
 	if fi, err := os.Stat(dir); err == nil && fi.Mode().Perm()&0o077 != 0 {
-		if err := os.Chmod(dir, 0o750); err != nil {
+		if err := os.Chmod(dir, 0o750); err != nil { // #nosec G302 -- a directory needs the search bit; 0750 is the store contract
 			return Result{}, err
 		}
 	}
