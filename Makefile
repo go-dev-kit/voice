@@ -62,7 +62,7 @@ tools:
 	fi
 
 lint: tools
-	@PATH="$(GO_BIN):$$PATH" golangci-lint run ./...
+	@PATH="$(GO_BIN):$$PATH" GOWORK=off golangci-lint run ./...
 
 test:
 	@go test $(GO_PACKAGES)

@@ -1283,7 +1283,8 @@ make verify
 ```
 
 `make verify` checks forbidden tracked artifacts, verifies modules, checks
-`gofmt`, verifies `go mod tidy`, runs `golangci-lint`, `go vet ./...`,
+`gofmt`, verifies `go mod tidy`, runs `golangci-lint` (`make lint`, with
+`GOWORK=off` and the repository `.golangci.yml`, the same gate CI runs), `go vet ./...`,
 `go test ./...`, and `go test -race ./...` when the local platform supports
 the race detector. The Gitea Actions workflow in `.gitea/workflows/ci.yml` uses
 `actions/setup-go` with `go-version-file: go.mod` and delegates to
