@@ -8,14 +8,26 @@ PROFILE_DIR ?= /tmp/voicekit-profiles
 GOLANGCI_LINT_VERSION ?= v2.15.0
 GOLANGCI_LINT_VERSION_RAW := $(patsubst v%,%,$(GOLANGCI_LINT_VERSION))
 GO_BIN := $(shell go env GOPATH)/bin
+GOVULNCHECK_VERSION ?= v1.9.0
+GOSEC_VERSION ?= v2.28.0
 
-.PHONY: verify forbidden-files mod-verify fmt-check tidy-check tools lint test vet race \
+.PHONY: verify ci security forbidden-files mod-verify fmt-check tidy-check tools lint test vet race \
 	fetch-test-models \
 	bench bench-all bench-audio bench-speaker bench-diarization bench-memory bench-load bench-asr-init \
 	bench-report bench-compare bench-profile bench-memprofile bench-clean bench-comprehensive \
 	bench-help
 
 verify: forbidden-files mod-verify fmt-check tidy-check lint vet test race
+
+# ci is the family-contract gate: the quality gates of verify, without the
+# benchmark or model-fetch targets. Security scanning is the separate
+# `security` target.
+ci: forbidden-files mod-verify fmt-check tidy-check lint vet test race
+
+# security runs govulncheck and gosec at pinned versions.
+security:
+	GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) $(GO_PACKAGES)
+	GOWORK=off go run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) -quiet $(GO_PACKAGES)
 
 # Fetch native test models listed in testdata/model_matrix.yaml into
 # $VK_TEST_MODEL_DIR (default /tmp/voicekit-models) for the env-gated native
