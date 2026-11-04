@@ -1286,9 +1286,13 @@ make verify
 `gofmt`, verifies `go mod tidy`, runs `golangci-lint` (`make lint`, with
 `GOWORK=off` and the repository `.golangci.yml`, the same gate CI runs), `go vet ./...`,
 `go test ./...`, and `go test -race ./...` when the local platform supports
-the race detector. The Gitea Actions workflow in `.gitea/workflows/ci.yml` uses
-`actions/setup-go` with `go-version-file: go.mod` and delegates to
-`make verify`, so local and remote gates stay aligned.
+the race detector.
+
+CI runs the shared gdk/.ci Go workflow, configured by `.glpx/ci.yaml`. That
+file also adds the `forbidden-files-lint` and `model-matrix` extra jobs. The
+shared golangci gate is mirrored by `make lint`, which pins golangci-lint
+v2.15.0 (`GOLANGCI_LINT_VERSION` in the Makefile), so a local lint run matches
+the remote one.
 
 The forbidden-file check rejects committed local environment files, model
 artifacts, runtime profiles, and generated benchmark directories. Model files
