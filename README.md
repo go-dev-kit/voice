@@ -1,10 +1,10 @@
 # VoiceKit
 
-A reusable Go 1.26.4 library for local voice processing experiments and audio plumbing. VoiceKit now defaults to audio-only initialization; speaker recognition, ASR, VAD, diarization, and TTS are opt-in runtime components that require explicit model configuration.
+A reusable Go 1.27 library for local voice processing experiments and audio plumbing. VoiceKit now defaults to audio-only initialization; speaker recognition, ASR, VAD, diarization, and TTS are opt-in runtime components that require explicit model configuration.
 
 ## Requirements
 
-- Go 1.26.4 or newer 1.26.x toolchain.
+- Go 1.27.0 or newer (`go.mod` declares `go 1.27.0` with `toolchain go1.27.3`).
 - CGO enabled for Sherpa-ONNX-backed ASR, VAD, diarization, speaker embeddings, and TTS.
 - Model files supplied by the caller or deployment environment. This repository does not commit model assets.
 
@@ -316,7 +316,7 @@ type Logger interface {
 - **ASR Models**: Native model memory depends on the configured Sherpa model family, provider, and quantization; model assets are not bundled
 
 ### Measured Local Baseline
-- **Current baseline**: Go 1.26.4, darwin/arm64, Apple M2, local CPU benchmarks.
+- **Last measured baseline**: taken on Go 1.26.4 (before the module floor moved to Go 1.27), darwin/arm64, Apple M2, local CPU benchmarks.
 - **Latest measured wins**: WAV/PCM decode and basic diarization allocation paths were optimized in July 2026; see `PERFORMANCE_IMPROVEMENTS.md` for the benchstat table and exact workflow.
 - **Benchmark artifacts**: Write ad hoc before/after files outside tracked source, for example `/tmp/voicekit-benchmarks`.
 
@@ -1616,6 +1616,21 @@ Speaker clustering uses bottom-up hierarchical clustering:
 - **Independent Segments**: Diarization segments can be processed in parallel
 - **Batch Processing**: Multiple audio files processed concurrently
 - **GPU Acceleration**: Neural network inference can use GPU acceleration
+
+## Compatibility and releases
+
+VoiceKit is a public module, `go.glpx.pro/gdk/voice`, hosted at
+<https://github.com/go-dev-kit/voice>. It is pre-v1: until `v1.0.0`, a minor
+release (`v0.N.0`) may contain a breaking API change, so pin an exact version
+and read the release notes before upgrading. Releases are tagged `vX.Y.Z`
+through the family release ledger. Tags `v0.1.0` to `v0.7.0` were created
+before voice joined the ledger and have no ledger receipt yet.
+
+The module declares `go 1.27.0` in `go.mod`. `make ci` runs the quality gates
+(forbidden-file and module checks, formatting, module tidiness, lint, vet,
+tests and the race detector) and
+`make security` runs `govulncheck` and `gosec`; both exist in this repository's
+`Makefile`.
 
 ## License
 
