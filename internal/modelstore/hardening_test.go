@@ -20,44 +20,82 @@ func hardenClient() *http.Client {
 	return c
 }
 
-func TestFetchSingleFileReDigestsAfterInstall(t *testing.T) {
-	body := []byte("verified bytes\n")
-	want := sum(body)
-	srv := serve(t, body)
+func TestFetchSingleFileRollsBackFailedRecheck(t *testing.T) {
+	verified := []byte("verified bytes\n")
+	rejected := []byte("swapped bytes\n")
+	want := sum(verified)
+	srv := serve(t, verified)
 	defer srv.Close()
-	dir := t.TempDir()
 	entry := Entry{Name: "plain", URL: srv.URL, SHA256: want}
-
-	// With the real digester the install re-check passes and the file
-	// verifies.
-	if _, err := Fetch(t.Context(), nil, entry, dir); err != nil {
-		t.Fatalf("Fetch: %v", err)
-	}
-	if err := entry.Verify(dir); err != nil {
-		t.Fatalf("Verify after install: %v", err)
+	client := func(dir string) *http.Client {
+		base := srv.Client().Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		return &http.Client{Transport: swapTransport{base: base, dir: dir, evil: rejected}}
 	}
 
-	// A swap that lands between rename and re-check fails the fetch loudly
-	// instead of leaving unverified bytes installed. The temporary source is
-	// gone after the rename, so there is deliberately no retry.
-	calls := 0
-	installDigest = func(string) (string, error) {
-		calls++
-		return strings.Repeat("0", 64), nil
-	}
-	t.Cleanup(func() { installDigest = DigestFile })
-	_, err := Fetch(t.Context(), nil, entry, dir)
-	var de *DigestError
-	if !errors.As(err, &de) {
-		t.Fatalf("swapped install: err = %v, want DigestError", err)
-	}
-	if calls != 1 {
-		t.Fatalf("re-digest ran %d times, want 1", calls)
-	}
-	// The previously installed, genuinely verified copy is untouched.
-	if err := entry.Verify(dir); err != nil {
-		t.Fatalf("Verify after failed re-check: %v", err)
-	}
+	t.Run("restores previous install", func(t *testing.T) {
+		dir := t.TempDir()
+		previous := []byte("previous verified model\n")
+		target := entry.Target(dir)
+		if err := os.WriteFile(target, previous, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := Fetch(t.Context(), client(dir), entry, dir)
+		var digestErr *DigestError
+		if !errors.As(err, &digestErr) {
+			t.Fatalf("swapped install: err = %v, want DigestError", err)
+		}
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("read restored target: %v", err)
+		}
+		if string(got) != string(previous) {
+			t.Fatalf("target = %q, want previous bytes %q", got, previous)
+		}
+		noTemp(t, dir)
+	})
+
+	t.Run("removes rejected first install", func(t *testing.T) {
+		dir := t.TempDir()
+		target := entry.Target(dir)
+		_, err := Fetch(t.Context(), client(dir), entry, dir)
+		var digestErr *DigestError
+		if !errors.As(err, &digestErr) {
+			t.Fatalf("swapped install: err = %v, want DigestError", err)
+		}
+		if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("target stat = %v, want rejected first install removed", err)
+		}
+		noTemp(t, dir)
+	})
+
+	t.Run("restores previous install after read error", func(t *testing.T) {
+		dir := t.TempDir()
+		previous := []byte("previous verified model\n")
+		target := entry.Target(dir)
+		if err := os.WriteFile(target, previous, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		readErr := errors.New("recheck failed")
+		installDigest = func(string) (string, error) { return "", readErr }
+		defer func() { installDigest = DigestFile }()
+
+		_, err := Fetch(t.Context(), srv.Client(), entry, dir)
+		if !errors.Is(err, readErr) {
+			t.Fatalf("Fetch error = %v, want %v", err, readErr)
+		}
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("read restored target: %v", err)
+		}
+		if string(got) != string(previous) {
+			t.Fatalf("target = %q, want previous bytes %q", got, previous)
+		}
+		noTemp(t, dir)
+	})
 }
 
 func TestFetchFollowsHTTPSRedirectsOnly(t *testing.T) {
