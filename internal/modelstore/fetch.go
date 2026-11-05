@@ -124,11 +124,9 @@ func Fetch(ctx context.Context, client *http.Client, entry Entry, dir string, op
 		return Result{}, err
 	}
 	defer os.Remove(tmp.Name()) // no-op once renamed
-	// The handle stays open until the content has been used: extraction and
-	// every digest re-check read through it, never through the name. The
-	// single-file install renames this handle, so its installed bytes are
-	// exactly the bytes hashed here; an archive install renames a staging
-	// directory by path.
+	// The download, per-file checks, and archive extraction use this open
+	// handle. Single-file installation closes it before renaming the path,
+	// then verifies the installed destination.
 	defer tmp.Close()
 	got, err := download(ctx, client, entry.URL, tmp, cfg.maxDownload)
 	if err != nil {
