@@ -1629,7 +1629,7 @@ VoiceKit is a public module, `go.glpx.pro/gdk/voice`, hosted at
 release (`v0.N.0`) may contain a breaking API change, so pin an exact version
 and read the release notes before upgrading. Releases are tagged `vX.Y.Z`
 through the family release ledger. Tags `v0.1.0` to `v0.7.0` were created
-before voice joined the ledger and have no ledger receipt yet.
+before voice joined the ledger and are recorded there as adopted releases.
 
 The module declares `go 1.27.0` in `go.mod`. `make ci` runs the quality gates
 (forbidden-file and module checks, formatting, module tidiness, lint, vet,

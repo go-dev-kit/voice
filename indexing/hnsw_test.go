@@ -144,6 +144,63 @@ func TestHNSWIndex_RemoveMissingDoesNotCreateMapping(t *testing.T) {
 	}
 }
 
+func TestHNSWIndex_FailedAddDoesNotCreateMapping(t *testing.T) {
+	index, err := NewHNSWIndex(&Config{
+		Dimension:      2,
+		MaxElements:    1,
+		M:              2,
+		EfConstruction: 8,
+		EfSearch:       8,
+		DistanceMetric: Cosine,
+	})
+	if err != nil {
+		t.Fatalf("failed to create HNSW index: %v", err)
+	}
+	defer index.Close()
+
+	ctx := context.Background()
+	if err := index.Add(ctx, "stored", []float32{1, 0}); err != nil {
+		t.Fatalf("failed to fill HNSW index: %v", err)
+	}
+	if err := index.Add(ctx, "rejected", []float32{0, 1}); err == nil {
+		t.Fatal("add beyond MaxElements unexpectedly succeeded")
+	}
+
+	size, err := index.Size(ctx)
+	if err != nil {
+		t.Fatalf("failed to get size: %v", err)
+	}
+	if size != 1 {
+		t.Fatalf("failed add changed logical size: got %d, want 1", size)
+	}
+	if err := index.Remove(ctx, "rejected"); err != nil {
+		t.Fatalf("removing rejected ID should be a no-op: %v", err)
+	}
+}
+
+func TestHNSWIndex_RemoveNativeMissingReturnsError(t *testing.T) {
+	index, err := NewHNSWIndex(&Config{
+		Dimension:      2,
+		MaxElements:    1,
+		M:              2,
+		EfConstruction: 8,
+		EfSearch:       8,
+		DistanceMetric: Cosine,
+	})
+	if err != nil {
+		t.Fatalf("failed to create HNSW index: %v", err)
+	}
+	defer index.Close()
+
+	index.mapper.GetIntID("missing-native-label")
+	if err := index.Remove(context.Background(), "missing-native-label"); err == nil {
+		t.Fatal("remove should report a mapper/native index mismatch")
+	}
+	if _, exists := index.mapper.LookupIntID("missing-native-label"); !exists {
+		t.Fatal("failed native removal should retain the mapping")
+	}
+}
+
 func TestHNSWIndex_SearchEmptyReturnsNoResults(t *testing.T) {
 	index, err := NewHNSWIndex(&Config{
 		Dimension:      4,

@@ -83,13 +83,20 @@ func (h *HNSWIndex) Add(ctx context.Context, id string, vector []float32) error 
 			h.config.Dimension, len(vector))
 	}
 
-	// Get integer ID for the string ID
-	intID := h.mapper.GetIntID(id)
+	// Preserve existing mappings when an update fails, but roll back a mapping
+	// allocated for a point the native index rejected.
+	intID, exists := h.mapper.LookupIntID(id)
+	if !exists {
+		intID = h.mapper.GetIntID(id)
+	}
 
 	// Add to HNSW index. The Safe variant reports failure (bad handle, or
 	// the C++ addPoint threw — e.g. the index is at MaxElements) instead of
 	// silently dropping the point.
 	if code := hnswlib.AddPointSafe(h.index, vector, uint64(intID)); code != 0 {
+		if !exists {
+			h.mapper.RemoveID(id)
+		}
 		return fmt.Errorf("hnsw: add %q failed (status %d; index may be at its max elements)", id, code)
 	}
 
@@ -118,8 +125,11 @@ func (h *HNSWIndex) Remove(ctx context.Context, id string) error {
 		return nil
 	}
 
-	// Mark as deleted in hnswlib
-	hnswlib.MarkDeleted(h.index, uint64(intID))
+	// Use the exception-safe binding. The unchecked binding lets a missing
+	// native label cross the C boundary as std::terminate.
+	if code := hnswlib.MarkDeletedSafe(h.index, uint64(intID)); code != 0 {
+		return fmt.Errorf("hnsw: remove %q failed (status %d)", id, code)
+	}
 
 	// Remove from mapper
 	h.mapper.RemoveID(id)
