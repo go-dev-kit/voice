@@ -72,7 +72,9 @@ func (s *ShardedSpeakerDatabase) getShard(speakerID string) int {
 	// Use SHA256 hash of speaker ID for even distribution
 	hash := sha256.Sum256([]byte(speakerID))
 	hashValue := binary.BigEndian.Uint64(hash[:8])
-	return int(hashValue % uint64(s.shardCount))
+	// NewShardedSpeakerDatabase bounds shardCount to [1, 64], so the modulo
+	// result is always representable as int on every supported architecture.
+	return int(hashValue % uint64(s.shardCount)) // #nosec G115 -- bounded as described above.
 }
 
 // getShardForRead gets the shard for reading operations

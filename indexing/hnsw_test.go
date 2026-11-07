@@ -356,6 +356,42 @@ func TestConfig_Validation(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "dimension exceeds native int32",
+			config: &Config{
+				Dimension:      math.MaxInt,
+				MaxElements:    1000,
+				M:              16,
+				EfConstruction: 200,
+				EfSearch:       100,
+				DistanceMetric: Cosine,
+			},
+			wantErr: math.MaxInt > math.MaxInt32,
+		},
+		{
+			name: "M exceeds native int32",
+			config: &Config{
+				Dimension:      192,
+				MaxElements:    1000,
+				M:              math.MaxInt,
+				EfConstruction: math.MaxInt,
+				EfSearch:       100,
+				DistanceMetric: Cosine,
+			},
+			wantErr: math.MaxInt > math.MaxInt32,
+		},
+		{
+			name: "efConstruction exceeds native int32",
+			config: &Config{
+				Dimension:      192,
+				MaxElements:    1000,
+				M:              16,
+				EfConstruction: math.MaxInt,
+				EfSearch:       100,
+				DistanceMetric: Cosine,
+			},
+			wantErr: math.MaxInt > math.MaxInt32,
+		},
 	}
 
 	for _, tt := range tests {

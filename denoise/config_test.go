@@ -1,6 +1,7 @@
 package denoise
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -80,6 +81,16 @@ func TestDenoiserConfig_Validate_NonPositiveNumThreadsDefaulted(t *testing.T) {
 	}
 	if c.NumThreads != 1 {
 		t.Fatalf("NumThreads = %d, want 1", c.NumThreads)
+	}
+}
+
+func TestDenoiserConfig_Validate_RejectsNativeThreadOverflow(t *testing.T) {
+	if math.MaxInt == math.MaxInt32 {
+		t.Skip("int cannot exceed the native int32 field on this architecture")
+	}
+	c := DenoiserConfig{GtcrnModel: writeTempModel(t), NumThreads: math.MaxInt}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for NumThreads above the native int32 range")
 	}
 }
 

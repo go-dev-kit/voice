@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -118,38 +119,48 @@ func (r *BenchmarkRunner) parseBenchmarkOutput(output, category string) {
 
 // Helper functions for parsing benchmark output
 func parseOperations(s string) int64 {
-	return int64(parseInt(strings.TrimSuffix(s, "x")))
+	value, err := strconv.ParseInt(strings.TrimSuffix(s, "x"), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 func parseMetricDuration(parts []string, unit string) time.Duration {
-	value := parseMetricUint(parts, unit)
-	if value == 0 {
+	value := metricValue(parts, unit)
+	if value == "" {
 		return 0
 	}
-	return time.Duration(value) * time.Nanosecond
+	duration, err := time.ParseDuration(value + strings.TrimSuffix(unit, "/op"))
+	if err != nil {
+		return 0
+	}
+	return duration
 }
 
 func parseMetricUint(parts []string, unit string) uint64 {
+	value := metricValue(parts, unit)
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func metricValue(parts []string, unit string) string {
 	for i := 1; i < len(parts); i++ {
 		part := parts[i]
 		if part == unit && i > 0 {
-			return parseInt(parts[i-1])
+			return parts[i-1]
 		}
 		if strings.HasSuffix(part, unit) {
-			return parseInt(strings.TrimSuffix(part, unit))
+			return strings.TrimSuffix(part, unit)
 		}
 	}
-	return 0
-}
-
-func parseInt(s string) uint64 {
-	var result uint64
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			result = result*10 + uint64(c-'0')
-		}
-	}
-	return result
+	return ""
 }
 
 // generateReport generates a comprehensive benchmark report

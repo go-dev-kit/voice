@@ -6,6 +6,7 @@ package denoise
 
 import (
 	"fmt"
+	"math"
 	"os"
 )
 
@@ -74,6 +75,8 @@ func (c *DenoiserConfig) Validate() error {
 
 	if c.NumThreads <= 0 {
 		errs = append(errs, fmt.Errorf("num threads must be positive, got %d", c.NumThreads))
+	} else if c.NumThreads > math.MaxInt32 {
+		errs = append(errs, fmt.Errorf("num threads must not exceed %d, got %d", math.MaxInt32, c.NumThreads))
 	}
 
 	if len(errs) > 0 {

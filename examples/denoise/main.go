@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strconv"
 
 	"go.glpx.pro/gdk/voice/audio"
@@ -37,7 +36,8 @@ func main() {
 	}
 
 	sampleRate := envInt("VOICEKIT_DENOISE_SAMPLE_RATE", 16000)
-	wavBytes, err := os.ReadFile(filepath.Clean(wavPath))
+	// #nosec G304 G703 -- Intentional local file access selected by the standalone CLI operator.
+	wavBytes, err := os.ReadFile(wavPath)
 	if err != nil {
 		log.Fatalf("failed to read WAV file: %v", err)
 	}

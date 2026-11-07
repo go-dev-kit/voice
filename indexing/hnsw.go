@@ -3,6 +3,7 @@ package indexing
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/viktordanov/go-hnswlib"
@@ -46,11 +47,11 @@ func NewHNSWIndex(config *Config) (*HNSWIndex, error) {
 	// Create HNSW index
 	// Parameters: dim, max_elements, M, ef_construction, random_seed, distance_type
 	index := hnswlib.InitHNSW(
-		int32(config.Dimension),
-		uint64(config.MaxElements),
-		int32(config.M),
-		int32(config.EfConstruction),
-		42, // Fixed seed for reproducibility
+		int32(config.Dimension),      // #nosec G115 -- Config.Validate bounds Dimension to int32.
+		uint64(config.MaxElements),   // #nosec G115 -- Config.Validate requires MaxElements to be positive.
+		int32(config.M),              // #nosec G115 -- Config.Validate bounds M to int32.
+		int32(config.EfConstruction), // #nosec G115 -- Config.Validate bounds EfConstruction to int32.
+		42,                           // Fixed seed for reproducibility
 		distanceType,
 	)
 
@@ -93,7 +94,7 @@ func (h *HNSWIndex) Add(ctx context.Context, id string, vector []float32) error 
 	// Add to HNSW index. The Safe variant reports failure (bad handle, or
 	// the C++ addPoint threw — e.g. the index is at MaxElements) instead of
 	// silently dropping the point.
-	if code := hnswlib.AddPointSafe(h.index, vector, uint64(intID)); code != 0 {
+	if code := hnswlib.AddPointSafe(h.index, vector, uint64(intID)); code != 0 { // #nosec G115 -- IDMapper issues positive int IDs.
 		if !exists {
 			h.mapper.RemoveID(id)
 		}
@@ -127,7 +128,7 @@ func (h *HNSWIndex) Remove(ctx context.Context, id string) error {
 
 	// Use the exception-safe binding. The unchecked binding lets a missing
 	// native label cross the C boundary as std::terminate.
-	if code := hnswlib.MarkDeletedSafe(h.index, uint64(intID)); code != 0 {
+	if code := hnswlib.MarkDeletedSafe(h.index, uint64(intID)); code != 0 { // #nosec G115 -- mapped IDs are positive ints.
 		return fmt.Errorf("hnsw: remove %q failed (status %d)", id, code)
 	}
 
@@ -170,7 +171,7 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, threshol
 	distances := make([]float32, k)
 
 	// Search
-	hnswlib.SearchKnn(h.index, query, int32(k), labels, distances)
+	hnswlib.SearchKnn(h.index, query, int32(k), labels, distances) // #nosec G115 -- normalizeSearchLimit caps k at 100.
 
 	// Convert results
 	var results []SearchResult
@@ -181,7 +182,10 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, threshol
 		}
 
 		// Get string ID
-		stringID, exists := h.mapper.GetStringID(int(labels[i]))
+		if labels[i] > math.MaxInt {
+			continue
+		}
+		stringID, exists := h.mapper.GetStringID(int(labels[i])) // #nosec G115 -- checked against math.MaxInt above.
 		if !exists {
 			continue // Skip deleted or invalid entries
 		}

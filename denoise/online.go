@@ -63,8 +63,8 @@ func buildOnlineDenoiserConfig(config *DenoiserConfig) *sherpa.OnlineSpeechDenoi
 	// its Model field (sherpa_onnx.go ~:2592), so this shares the same
 	// model-config shape as the offline denoiser.
 	model := sherpa.OfflineSpeechDenoiserModelConfig{
-		NumThreads: int32(config.NumThreads),
-		Debug:      int32(boolToInt(config.Debug)),
+		NumThreads: int32(config.NumThreads), // #nosec G115 -- Validate bounds NumThreads to the native int32 range.
+		Debug:      boolToInt32(config.Debug),
 		Provider:   config.Provider,
 	}
 	if config.GtcrnModel != "" {

@@ -185,6 +185,22 @@ func TestDecodeWAVOddSizedChunkBeforeData(t *testing.T) {
 	assertSliceNear(t, got.Samples, []float32{0.5, -0.5}, 1e-6)
 }
 
+func TestDecodeWAVRejectsMissingOddChunkPad(t *testing.T) {
+	le := binary.LittleEndian
+	var data []byte
+	data = append(data, "RIFF"...)
+	data = le.AppendUint32(data, 0)
+	data = append(data, "WAVE"...)
+	data = append(data, "odd "...)
+	data = le.AppendUint32(data, 3)
+	data = append(data, 1, 2, 3)
+	le.PutUint32(data[4:], uint32(len(data)-8))
+
+	if _, err := Decode(data, FormatWAV, DecodeLimits{}); err == nil {
+		t.Fatal("Decode accepted an odd-sized chunk without its required pad byte")
+	}
+}
+
 func TestWAVDataChunkLocator(t *testing.T) {
 	good := buildWAV(wavSpec{tag: 1, channels: 1, rate: 16000, bits: 16}, make([]byte, 10))
 	start, declared, ok := wavChunk(good, "data")

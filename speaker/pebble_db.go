@@ -2,6 +2,7 @@ package speaker
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,8 +57,11 @@ func NewPebbleSpeakerDatabase(dataDir string) (*PebbleSpeakerDatabase, error) {
 
 	// Migrate from JSON if it exists
 	if err := database.migrateFromJSON(dataDir); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to migrate from JSON: %v", err)
+		migrationErr := fmt.Errorf("failed to migrate from JSON: %w", err)
+		if closeErr := db.Close(); closeErr != nil {
+			return nil, errors.Join(migrationErr, fmt.Errorf("close database after migration failure: %w", closeErr))
+		}
+		return nil, migrationErr
 	}
 
 	return database, nil

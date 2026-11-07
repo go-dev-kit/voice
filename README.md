@@ -1634,8 +1634,12 @@ before voice joined the ledger and are recorded there as adopted releases.
 The module declares `go 1.27.0` in `go.mod`. `make ci` runs the quality gates
 (forbidden-file and module checks, formatting, module tidiness, lint, vet,
 tests and the race detector) and
-`make security` runs `govulncheck` and `gosec`; both exist in this repository's
-`Makefile`.
+`make security` runs `govulncheck` and the installed CI-aligned gosec v2.29.0
+scanner with `golang.org/x/tools` v0.52.0. The Makefile verifies both embedded
+module versions and checksums before scanning; stock gosec v2.29.0 uses an older
+loader that cannot read Go 1.27.3 export data. Set `GOSEC=/path/to/gosec` to select
+a compatible executable. The checksum-pinned build recipe is maintained in the
+[shared CI workflow](https://gitea.bk.glpx.pro/glpx/ci/src/branch/main/.gitea/workflows/go.yml).
 
 ## License
 

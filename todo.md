@@ -1,5 +1,11 @@
 # VoiceKit Foundation Sprint Todo
 
+## Security scanner compatibility (2026-11)
+
+- [x] Align local gosec with CI v2.29, validate integer narrowing at native and
+  file-format boundaries, preserve operator-selected example audio paths,
+  and propagate Pebble cleanup errors.
+
 ## Backlog fix sprint (2026-10)
 
 - [x] Whisper: empty or "auto" language auto-detects (Config.Language no longer

@@ -538,6 +538,31 @@ func TestEncodeClampsOutOfRangeSamples(t *testing.T) {
 	assertSliceNear(t, float32sFromInt16(int16s(t, got)), []float32{32767, -32768, 32767, -32768, 16384}, 1)
 }
 
+func TestEncodePCMPreservesSignedExtremaAtEveryDepth(t *testing.T) {
+	conv := newTestConverter(t)
+	tests := []struct {
+		bits int
+		want []byte
+	}{
+		{bits: 16, want: []byte{0x00, 0x80, 0xFF, 0x7F}},
+		{bits: 24, want: []byte{0x00, 0x00, 0x80, 0xFF, 0xFF, 0x7F}},
+		{bits: 32, want: []byte{0x00, 0x00, 0x00, 0x80, 0xFF, 0xFF, 0xFF, 0x7F}},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%d-bit", tt.bits), func(t *testing.T) {
+			config := pcmConfig(16000, 1)
+			config.BitsPerSample = tt.bits
+			got, err := conv.ConvertFromFloat32([]float32{-1, 1}, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("encoded bytes = % X, want % X", got, tt.want)
+			}
+		})
+	}
+}
+
 func float32sFromInt16(v []int16) []float32 {
 	out := make([]float32, len(v))
 	for i, x := range v {

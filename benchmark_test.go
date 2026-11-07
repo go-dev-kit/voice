@@ -26,6 +26,18 @@ func TestBenchmarkRunner(t *testing.T) {
 	}
 }
 
+func TestBenchmarkMetricParsingRejectsOverflowAndPreservesFractions(t *testing.T) {
+	if got := parseOperations("18446744073709551615"); got != 0 {
+		t.Fatalf("overflowing operation count = %d, want 0", got)
+	}
+	if got := parseMetricDuration([]string{"BenchmarkDecode-8", "100", "1.25", "ns/op"}, "ns/op"); got != time.Nanosecond {
+		t.Fatalf("fractional duration = %s, want 1ns after duration precision truncation", got)
+	}
+	if got := parseMetricUint([]string{"BenchmarkDecode-8", "100", "18446744073709551616", "B/op"}, "B/op"); got != 0 {
+		t.Fatalf("overflowing byte count = %d, want 0", got)
+	}
+}
+
 // BenchmarkVoiceKitAudioConversionPipeline benchmarks real local audio conversion work.
 func BenchmarkVoiceKitAudioConversionPipeline(b *testing.B) {
 	sampleRate := 44100

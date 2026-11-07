@@ -1,6 +1,9 @@
 package indexing
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // Config holds configuration for vector indexing
 type Config struct {
@@ -43,14 +46,23 @@ func (c *Config) Validate() error {
 	if c.Dimension <= 0 {
 		return fmt.Errorf("dimension must be positive, got %d", c.Dimension)
 	}
+	if c.Dimension > math.MaxInt32 {
+		return fmt.Errorf("dimension must not exceed %d, got %d", math.MaxInt32, c.Dimension)
+	}
 	if c.MaxElements <= 0 {
 		return fmt.Errorf("maxElements must be positive, got %d", c.MaxElements)
 	}
 	if c.M <= 0 {
 		return fmt.Errorf("m must be positive, got %d", c.M)
 	}
+	if c.M > math.MaxInt32 {
+		return fmt.Errorf("m must not exceed %d, got %d", math.MaxInt32, c.M)
+	}
 	if c.EfConstruction < c.M {
 		return fmt.Errorf("efConstruction must be >= M, got %d < %d", c.EfConstruction, c.M)
+	}
+	if c.EfConstruction > math.MaxInt32 {
+		return fmt.Errorf("efConstruction must not exceed %d, got %d", math.MaxInt32, c.EfConstruction)
 	}
 	if c.EfSearch <= 0 {
 		return fmt.Errorf("efSearch must be positive, got %d", c.EfSearch)

@@ -9,9 +9,13 @@ GOLANGCI_LINT_VERSION ?= v2.15.0
 GOLANGCI_LINT_VERSION_RAW := $(patsubst v%,%,$(GOLANGCI_LINT_VERSION))
 GO_BIN := $(shell go env GOPATH)/bin
 GOVULNCHECK_VERSION ?= v1.9.0
-GOSEC_VERSION ?= v2.28.0
+GOSEC_VERSION ?= v2.29.0
+GOSEC ?= $(GO_BIN)/gosec
+GOSEC_X_TOOLS_VERSION ?= v0.52.0
+GOSEC_MODULE_SUM := h1:pF2HSLcnY5voqpxQumEe0O5YAAbvF4Syu4qeIewpLyc=
+GOSEC_X_TOOLS_SUM := h1:ryxg4U63oaUYk7uOLTF37n43f4qgtGvqV4Ioit1BaEs=
 
-.PHONY: verify ci security forbidden-files mod-verify fmt-check tidy-check tools lint test vet race \
+.PHONY: verify ci security gosec-preflight forbidden-files mod-verify fmt-check tidy-check tools lint test vet race \
 	fetch-test-models \
 	bench bench-all bench-audio bench-speaker bench-diarization bench-memory bench-load bench-asr-init \
 	bench-report bench-compare bench-profile bench-memprofile bench-clean bench-comprehensive \
@@ -25,9 +29,21 @@ verify: forbidden-files mod-verify fmt-check tidy-check lint vet test race
 ci: forbidden-files mod-verify fmt-check tidy-check lint vet test race
 
 # security runs govulncheck and gosec at pinned versions.
-security:
+security: gosec-preflight
 	GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) $(GO_PACKAGES)
-	GOWORK=off go run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) -quiet $(GO_PACKAGES)
+	GOWORK=off "$(GOSEC)" -quiet $(GO_PACKAGES)
+
+# The stock v2.29.0 dependency graph cannot read Go 1.27.3 export data.
+# Admit the same checksum-pinned scanner/tools pair as the shared CI workflow.
+gosec-preflight:
+	@set -eu; \
+		message='compatible gosec required: $(GOSEC_VERSION) with golang.org/x/tools $(GOSEC_X_TOOLS_VERSION); set GOSEC=/path/to/compatible/gosec'; \
+		test -x "$(GOSEC)" || { echo "$$message" >&2; exit 1; }; \
+		info=$$(go version -m "$(GOSEC)"); \
+		scanner=$$(printf '%s\n' "$$info" | awk '$$1 == "mod" && $$2 == "github.com/securego/gosec/v2" { print $$3 " " $$4 }'); \
+		tools=$$(printf '%s\n' "$$info" | awk '$$1 == "dep" && $$2 == "golang.org/x/tools" { print $$3 " " $$4 }'); \
+		test "$$scanner" = '$(GOSEC_VERSION) $(GOSEC_MODULE_SUM)' && \
+			test "$$tools" = '$(GOSEC_X_TOOLS_VERSION) $(GOSEC_X_TOOLS_SUM)' || { echo "$$message" >&2; exit 1; }
 
 # Fetch native test models listed in testdata/model_matrix.yaml into
 # $VK_TEST_MODEL_DIR (default /tmp/voicekit-models) for the env-gated native

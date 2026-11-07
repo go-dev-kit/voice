@@ -266,14 +266,14 @@ func (c *Converter) decodeWAV(data []byte, config *AudioConfig) ([]float32, erro
 	// A data chunk that claims more bytes than the file holds is a truncated
 	// file; the converter reports it rather than decoding a prefix.
 	if start, declared, ok := wavChunk(data, "data"); ok {
-		size := uint64(len(data) - start)
+		size := len(data) - start
 		if declared != unknownWAVDataSize {
-			if uint64(start)+uint64(declared) > uint64(len(data)) {
+			if uint64(declared) > uint64(size) { // #nosec G115 -- size is a non-negative slice length.
 				return nil, fmt.Errorf("failed to decode WAV PCM data: %w", io.ErrUnexpectedEOF)
 			}
-			size = uint64(declared)
+			size = int(declared) // #nosec G115 -- declared was checked against the available slice length.
 		}
-		if size%uint64(config.GetBytesPerSample()) != 0 {
+		if size%config.GetBytesPerSample() != 0 {
 			return nil, fmt.Errorf("WAV PCM data size not aligned with sample size")
 		}
 	}
@@ -306,7 +306,7 @@ func (c *Converter) decodePCMBytesInto(samples []float32, data []byte, config *A
 	case 16:
 		for i := range samples {
 			offset := i * 2
-			val := int16(binary.LittleEndian.Uint16(data[offset : offset+2]))
+			val := signedPCM16(binary.LittleEndian.Uint16(data[offset : offset+2]))
 			samples[i] = float32(val) / c.config.NormalizeFactor
 		}
 	case 24:
@@ -321,7 +321,7 @@ func (c *Converter) decodePCMBytesInto(samples []float32, data []byte, config *A
 	case 32:
 		for i := range samples {
 			offset := i * 4
-			val := int32(binary.LittleEndian.Uint32(data[offset : offset+4]))
+			val := signedPCM32(binary.LittleEndian.Uint32(data[offset : offset+4]))
 			samples[i] = float32(val) / 2147483648.0
 		}
 	default:
@@ -364,7 +364,7 @@ func (c *Converter) encodeWAV(samples []float32, config *AudioConfig) ([]byte, e
 // wavDataSizeFits reports whether a data chunk of dataSize bytes fits the
 // 32-bit RIFF size fields, which also count the 36 header bytes after them.
 func wavDataSizeFits(dataSize int) bool {
-	return dataSize >= 0 && uint64(dataSize) <= math.MaxUint32-36
+	return dataSize >= 0 && int64(dataSize) <= math.MaxUint32-36
 }
 
 // createWAVHeader creates a WAV file header
@@ -373,22 +373,22 @@ func (c *Converter) createWAVHeader(dataSize int, config *AudioConfig) []byte {
 
 	// RIFF header
 	copy(header[0:4], "RIFF")
-	binary.LittleEndian.PutUint32(header[4:8], uint32(36+dataSize)) // File size
+	binary.LittleEndian.PutUint32(header[4:8], uint32(36+dataSize)) // #nosec G115 -- encodeWAV enforces the RIFF uint32 limit.
 	copy(header[8:12], "WAVE")
 
 	// Format chunk
 	copy(header[12:16], "fmt ")
 	binary.LittleEndian.PutUint32(header[16:20], 16)                                                                   // Chunk size
 	binary.LittleEndian.PutUint16(header[20:22], 1)                                                                    // PCM format
-	binary.LittleEndian.PutUint16(header[22:24], uint16(config.Channels))                                              // Channels
-	binary.LittleEndian.PutUint32(header[24:28], uint32(config.SampleRate))                                            // Sample rate
-	binary.LittleEndian.PutUint32(header[28:32], uint32(config.SampleRate*config.Channels*config.GetBytesPerSample())) // Byte rate
-	binary.LittleEndian.PutUint16(header[32:34], uint16(config.Channels*config.GetBytesPerSample()))                   // Block align
-	binary.LittleEndian.PutUint16(header[34:36], uint16(config.BitsPerSample))                                         // Bits per sample
+	binary.LittleEndian.PutUint16(header[22:24], uint16(config.Channels))                                              // #nosec G115 -- validated to [1, 8].
+	binary.LittleEndian.PutUint32(header[24:28], uint32(config.SampleRate))                                            // #nosec G115 -- validated to [8000, 192000].
+	binary.LittleEndian.PutUint32(header[28:32], uint32(config.SampleRate*config.Channels*config.GetBytesPerSample())) // #nosec G115 -- validated maxima fit uint32.
+	binary.LittleEndian.PutUint16(header[32:34], uint16(config.Channels*config.GetBytesPerSample()))                   // #nosec G115 -- validated maxima fit uint16.
+	binary.LittleEndian.PutUint16(header[34:36], uint16(config.BitsPerSample))                                         // #nosec G115 -- validated to 8, 16, 24, or 32.
 
 	// Data chunk
 	copy(header[36:40], "data")
-	binary.LittleEndian.PutUint32(header[40:44], uint32(dataSize)) // Data size
+	binary.LittleEndian.PutUint32(header[40:44], uint32(dataSize)) // #nosec G115 -- encodeWAV enforces the RIFF uint32 limit.
 
 	return header
 }
@@ -406,16 +406,18 @@ func (c *Converter) encodePCM(samples []float32, config *AudioConfig) ([]byte, e
 			output[i] = uint8(math.Round(float64((sample + 1.0) * 127.5)))
 		case 16:
 			offset := i * bytesPerSample
-			binary.LittleEndian.PutUint16(output[offset:offset+2], uint16(floatToInt16(sample)))
+			// PCM stores the two's-complement bit pattern in an unsigned wire field.
+			binary.LittleEndian.PutUint16(output[offset:offset+2], uint16(floatToInt16(sample))) // #nosec G115 -- intentional signed-bit representation.
 		case 24:
 			offset := i * bytesPerSample
 			val := floatToInt24(sample)
-			output[offset] = byte(val)
-			output[offset+1] = byte(val >> 8)
-			output[offset+2] = byte(val >> 16)
+			var encoded [4]byte
+			binary.LittleEndian.PutUint32(encoded[:], uint32(val)) // #nosec G115 -- intentional signed-bit representation.
+			copy(output[offset:offset+3], encoded[:3])
 		case 32:
 			offset := i * bytesPerSample
-			binary.LittleEndian.PutUint32(output[offset:offset+4], uint32(floatToInt32(sample)))
+			// PCM stores the two's-complement bit pattern in an unsigned wire field.
+			binary.LittleEndian.PutUint32(output[offset:offset+4], uint32(floatToInt32(sample))) // #nosec G115 -- intentional signed-bit representation.
 		default:
 			return nil, fmt.Errorf("unsupported bits per sample: %d", config.BitsPerSample)
 		}

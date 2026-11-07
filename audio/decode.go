@@ -154,9 +154,12 @@ func decodeWAVNative(data []byte, limits DecodeLimits) (*Decoded, error) {
 	// as audio and reads nothing for a streamed file whose size is unknown. The
 	// slice is bounded by the bytes actually present, whatever size the header
 	// claims, so a forged size cannot drive an allocation.
-	end := uint64(len(data))
+	end := len(data)
 	if declared != unknownWAVDataSize {
-		end = min(end, uint64(start)+uint64(declared))
+		available := len(data) - start
+		if uint64(declared) < uint64(available) { // #nosec G115 -- both operands are non-negative lengths.
+			end = start + int(declared) // #nosec G115 -- declared is smaller than an existing slice length.
+		}
 	}
 	raw := data[start:end]
 	if bytesPerFrame := int(decoder.NumChans) * max(int(decoder.BitDepth)/8, 1); bytesPerFrame > 0 {
@@ -197,11 +200,14 @@ func validateWAVChunks(data []byte) error {
 		if id == "fmt " && size > maxWAVFormatChunk {
 			return fmt.Errorf("invalid WAV file: fmt chunk claims %d bytes", size)
 		}
-		next := uint64(off) + 8 + size + size&1
-		if uint64(off)+8+size > uint64(len(data)) {
+		next := uint64(off) + 8 + size + size&1     // #nosec G115 -- off is a non-negative slice offset.
+		if uint64(off)+8+size > uint64(len(data)) { // #nosec G115 -- compares non-negative slice lengths.
 			return fmt.Errorf("invalid WAV file: %q chunk claims %d bytes, only %d remain", id, size, len(data)-off-8)
 		}
-		off = int(next)
+		if next > uint64(len(data)) { // #nosec G115 -- rejects a missing odd-size chunk pad byte.
+			return fmt.Errorf("invalid WAV file: %q chunk is missing its pad byte", id)
+		}
+		off = int(next) // #nosec G115 -- next was checked against len(data).
 	}
 	return nil
 }
@@ -272,7 +278,7 @@ func pcmToFloat32(raw []byte, format, bits int) ([]float32, error) {
 	case 16:
 		out := make([]float32, len(raw)/2)
 		for i := range out {
-			out[i] = float32(int16(binary.LittleEndian.Uint16(raw[i*2:]))) / 32768
+			out[i] = float32(signedPCM16(binary.LittleEndian.Uint16(raw[i*2:]))) / 32768
 		}
 		return out, nil
 	case 24:
@@ -288,12 +294,28 @@ func pcmToFloat32(raw []byte, format, bits int) ([]float32, error) {
 	case 32:
 		out := make([]float32, len(raw)/4)
 		for i := range out {
-			out[i] = float32(int32(binary.LittleEndian.Uint32(raw[i*4:]))) / 2147483648
+			out[i] = float32(signedPCM32(binary.LittleEndian.Uint32(raw[i*4:]))) / 2147483648
 		}
 		return out, nil
 	default:
 		return nil, fmt.Errorf("unsupported WAV bits per sample: %d", bits)
 	}
+}
+
+func signedPCM16(value uint16) int32 {
+	signed := int32(value)
+	if value&0x8000 != 0 {
+		signed -= 1 << 16
+	}
+	return signed
+}
+
+func signedPCM32(value uint32) int64 {
+	signed := int64(value)
+	if value&0x80000000 != 0 {
+		signed -= 1 << 32
+	}
+	return signed
 }
 
 func decodeFLACNative(data []byte, limits DecodeLimits) (*Decoded, error) {

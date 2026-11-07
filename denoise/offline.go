@@ -59,8 +59,8 @@ func NewSherpaSpeechDenoiser(config *DenoiserConfig) (*SherpaSpeechDenoiser, err
 
 func buildOfflineDenoiserConfig(config *DenoiserConfig) *sherpa.OfflineSpeechDenoiserConfig {
 	model := sherpa.OfflineSpeechDenoiserModelConfig{
-		NumThreads: int32(config.NumThreads),
-		Debug:      int32(boolToInt(config.Debug)),
+		NumThreads: int32(config.NumThreads), // #nosec G115 -- Validate bounds NumThreads to the native int32 range.
+		Debug:      boolToInt32(config.Debug),
 		Provider:   config.Provider,
 	}
 	if config.GtcrnModel != "" {
@@ -162,7 +162,7 @@ func (n *nativeOfflineDenoiser) Close() error {
 	return nil
 }
 
-func boolToInt(v bool) int {
+func boolToInt32(v bool) int32 {
 	if v {
 		return 1
 	}
